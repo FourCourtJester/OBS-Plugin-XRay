@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
 
+#include <QPointer>
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
@@ -41,6 +43,9 @@ static const char *DOCK_ID = "obs-xray-subscene-sources";
 static bool dock_registered = false;
 static bool callback_registered = false;
 
+/* Guarded rather than raw: OBS owns the widget and outlives our pointer to it. */
+static QPointer<XRayDock> dock_widget;
+
 static void create_dock(void)
 {
 	if (dock_registered)
@@ -58,8 +63,12 @@ static void create_dock(void)
 		return;
 	}
 
+	dock_widget = dock;
 	dock_registered = true;
 	obs_log(LOG_INFO, "dock registered as '%s'", DOCK_ID);
+
+	/* FINISHED_LOADING lands after the first scene is already active. */
+	dock->refresh();
 }
 
 static void destroy_dock(void)
@@ -68,6 +77,7 @@ static void destroy_dock(void)
 		return;
 
 	obs_frontend_remove_dock(DOCK_ID);
+	dock_widget = nullptr;
 	dock_registered = false;
 }
 
@@ -78,6 +88,32 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		/* Build here, not in obs_module_load() -- the frontend does not
 		 * exist yet at module load time. */
 		create_dock();
+		break;
+
+	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		/*
+		 * The dock is anchored to the program scene, so it rewrites
+		 * itself on every cut. Accepted for v1.0; a "pin to scene"
+		 * toggle is the cheap fix if it proves disruptive.
+		 */
+		if (dock_widget)
+			dock_widget->refresh();
+		break;
+
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+		/*
+		 * Drop every row before OBS destroys the sources underneath us.
+		 * This does arrive: OBSBasic emits it before ClearSceneData()
+		 * raises disableSaving, which is what would otherwise suppress
+		 * frontend events.
+		 */
+		if (dock_widget)
+			dock_widget->clear();
+		break;
+
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
+		if (dock_widget)
+			dock_widget->refresh();
 		break;
 
 	case OBS_FRONTEND_EVENT_EXIT:

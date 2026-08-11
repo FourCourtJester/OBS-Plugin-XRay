@@ -18,9 +18,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "SceneWalk.hpp"
+
 #include <QWidget>
 
+#include <vector>
+
 class QLabel;
+class QScrollArea;
 class QVBoxLayout;
 
 /*
@@ -36,7 +41,25 @@ class XRayDock : public QWidget {
 public:
 	explicit XRayDock(QWidget *parent = nullptr);
 
+public slots:
+	/*
+	 * Rebuilds the tree from the current program scene.
+	 *
+	 * Both slots touch widgets, so they must run on the UI thread. Frontend
+	 * events already arrive there (OnEvent dispatches synchronously from
+	 * OBSBasic), but the per-scene libobs signals added in the next phase do
+	 * not -- those have to reach these through a queued connection.
+	 */
+	void refresh();
+
+	/* Drops every row and shows the empty state. */
+	void clear();
+
 private:
-	QVBoxLayout *layout = nullptr;
+	void addRows(const std::vector<xray::Node> &nodes, int depth);
+
+	QScrollArea *scrollArea = nullptr;
+	QWidget *content = nullptr;
+	QVBoxLayout *contentLayout = nullptr;
 	QLabel *placeholder = nullptr;
 };

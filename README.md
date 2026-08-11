@@ -23,16 +23,28 @@ used. That is the intended behaviour, not a side effect.
 
 ## Status
 
-Early. The dock registers and appears under **View → Docks**; it does not walk scenes yet.
+Early. The dock registers under **View → Docks** and renders the nested contents of the program
+scene as a read-only indented list. Nothing in it is interactive yet, and it only re-reads on a
+scene cut — edits made inside a scene while it is on program will not show until the next refresh.
 
 | Phase | | |
 |---|---|---|
 | 1 | Stub dock, registered on `FINISHED_LOADING` | done |
-| 2 | Read-only recursive walk with pruning | next |
-| 3 | Live updates from per-scene signals | |
+| 2 | Read-only recursive walk with pruning | done |
+| 3 | Live updates from per-scene signals | next |
 | 4 | Visibility and lock toggles | |
 | 5 | Within-scene reorder | |
 | 6 | Visual parity with the Sources dock | |
+
+### What the dock shows
+
+Pruning is asymmetric. Above a subscene, only items on a path to one appear — an ordinary source at
+the top level of the program scene gets no row, since the stock Sources dock already lists it, and a
+group earns a row only if a subscene turned up beneath it. At and below a subscene, everything is
+listed, because seeing inside the subscene is the point.
+
+A scene referenced twice is drawn twice; there is no deduplication. A scene that appears on its own
+ancestor path is marked `(recursive)` and not descended into.
 
 ## Requirements
 
