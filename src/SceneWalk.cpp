@@ -36,10 +36,31 @@ namespace {
  */
 constexpr int MAX_DEPTH = 32;
 
+struct State {
+	std::vector<std::string> ancestors;
+	WalkResult result;
+};
+
 const char *safe_name(obs_source_t *source)
 {
 	const char *name = obs_source_get_name(source);
 	return name ? name : "";
+}
+
+void watch(State &state, obs_source_t *source, bool container)
+{
+	const char *uuid = obs_source_get_uuid(source);
+	if (!uuid)
+		return;
+
+	auto same = [uuid](const Watch &w) {
+		return w.uuid == uuid;
+	};
+
+	if (std::find_if(state.result.watches.begin(), state.result.watches.end(), same) != state.result.watches.end())
+		return;
+
+	state.result.watches.push_back({uuid, container});
 }
 
 bool collect_item(obs_scene_t *, obs_sceneitem_t *item, void *param)
@@ -62,13 +83,15 @@ std::vector<OBSSceneItem> snapshot_items(obs_scene_t *scene)
 	return items;
 }
 
-std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, std::vector<std::string> &ancestors);
+std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state);
 
-Node build_subscene(obs_source_t *source, obs_scene_t *subscene, int depth, std::vector<std::string> &ancestors)
+Node build_subscene(obs_source_t *source, obs_scene_t *subscene, int depth, State &state)
 {
 	Node node;
 	node.kind = NodeKind::SubScene;
 	node.name = safe_name(source);
+
+	watch(state, source, true);
 
 	const char *uuid = obs_source_get_uuid(source);
 	std::string key = uuid ? uuid : node.name;
@@ -78,19 +101,19 @@ Node build_subscene(obs_source_t *source, obs_scene_t *subscene, int depth, std:
 	 * scene referenced twice as a sibling is rendered twice by design, so a
 	 * global visited set would wrongly swallow the second copy.
 	 */
-	if (std::find(ancestors.begin(), ancestors.end(), key) != ancestors.end()) {
+	if (std::find(state.ancestors.begin(), state.ancestors.end(), key) != state.ancestors.end()) {
 		node.cyclic = true;
 		return node;
 	}
 
-	ancestors.push_back(std::move(key));
-	node.children = walk_scene(subscene, true, depth + 1, ancestors);
-	ancestors.pop_back();
+	state.ancestors.push_back(std::move(key));
+	node.children = walk_scene(subscene, true, depth + 1, state);
+	state.ancestors.pop_back();
 
 	return node;
 }
 
-std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, std::vector<std::string> &ancestors)
+std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state)
 {
 	std::vector<Node> nodes;
 
@@ -103,10 +126,17 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 			continue;
 
 		if (obs_scene_t *group = obs_group_from_source(source)) {
+			/*
+			 * Watched before the prune decision, not after: a group
+			 * that earns no row today still has to be watched, or
+			 * dropping a scene into it would go unnoticed.
+			 */
+			watch(state, source, true);
+
 			Node node;
 			node.kind = NodeKind::Group;
 			node.name = safe_name(source);
-			node.children = walk_scene(group, inside_subscene, depth + 1, ancestors);
+			node.children = walk_scene(group, inside_subscene, depth + 1, state);
 
 			/*
 			 * Groups are walked through rather than around, but a
@@ -117,13 +147,15 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 				nodes.push_back(std::move(node));
 
 		} else if (obs_scene_t *subscene = obs_scene_from_source(source)) {
-			nodes.push_back(build_subscene(source, subscene, depth, ancestors));
+			nodes.push_back(build_subscene(source, subscene, depth, state));
 
 		} else if (inside_subscene) {
 			Node node;
 			node.kind = NodeKind::Source;
 			node.name = safe_name(source);
 			nodes.push_back(std::move(node));
+
+			watch(state, source, false);
 		}
 	}
 
@@ -132,18 +164,22 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 
 } // namespace
 
-std::vector<Node> walk_program_scene()
+WalkResult walk_program_scene()
 {
 	/* obs_frontend_get_current_scene() returns a new reference. */
 	OBSSourceAutoRelease program = obs_frontend_get_current_scene();
 	if (!program)
 		return {};
 
-	std::vector<std::string> ancestors;
-	if (const char *uuid = obs_source_get_uuid(program))
-		ancestors.emplace_back(uuid);
+	State state;
+	watch(state, program, true);
 
-	return walk_scene(obs_scene_from_source(program), false, 0, ancestors);
+	if (const char *uuid = obs_source_get_uuid(program))
+		state.ancestors.emplace_back(uuid);
+
+	state.result.tree = walk_scene(obs_scene_from_source(program), false, 0, state);
+
+	return std::move(state.result);
 }
 
 } // namespace xray

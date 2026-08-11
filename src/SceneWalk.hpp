@@ -43,6 +43,30 @@ struct Node {
 };
 
 /*
+ * A source whose signals have to be watched to keep the tree honest.
+ *
+ * Containers are scene and group sources; they carry the item_* and reorder
+ * signals. Everything else is a rendered leaf, watched only so a rename or a
+ * destroy redraws its row.
+ */
+struct Watch {
+	std::string uuid;
+	bool container = false;
+};
+
+struct WalkResult {
+	std::vector<Node> tree;
+
+	/*
+	 * Includes every container the walk descended into, even ones that were
+	 * pruned out of the tree. A group with no subscene beneath it earns no
+	 * row, but it still has to be watched -- otherwise dropping a scene into
+	 * that group would never make it appear.
+	 */
+	std::vector<Watch> watches;
+};
+
+/*
  * Walks the current program scene and returns its subscene branches.
  *
  * Pruning is asymmetric, and deliberately so. Above a subscene only items on a
@@ -52,8 +76,9 @@ struct Node {
  * At and below a subscene everything is listed, because seeing inside the
  * subscene is the entire point of the dock.
  *
- * Returns an empty vector when the program scene contains no scene sources.
+ * The tree is empty when the program scene contains no scene sources; watches
+ * never is, since the program scene itself is always watched.
  */
-std::vector<Node> walk_program_scene();
+WalkResult walk_program_scene();
 
 } // namespace xray

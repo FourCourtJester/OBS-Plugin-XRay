@@ -24,15 +24,15 @@ used. That is the intended behaviour, not a side effect.
 ## Status
 
 Early. The dock registers under **View → Docks** and renders the nested contents of the program
-scene as a read-only indented list. Nothing in it is interactive yet, and it only re-reads on a
-scene cut — edits made inside a scene while it is on program will not show until the next refresh.
+scene as a live indented list — it follows adds, removals, reorders, renames and scene cuts as they
+happen. Nothing in it is interactive yet: the rows are display only.
 
 | Phase | | |
 |---|---|---|
 | 1 | Stub dock, registered on `FINISHED_LOADING` | done |
 | 2 | Read-only recursive walk with pruning | done |
-| 3 | Live updates from per-scene signals | next |
-| 4 | Visibility and lock toggles | |
+| 3 | Live updates from per-scene signals | done |
+| 4 | Visibility and lock toggles | next |
 | 5 | Within-scene reorder | |
 | 6 | Visual parity with the Sources dock | |
 

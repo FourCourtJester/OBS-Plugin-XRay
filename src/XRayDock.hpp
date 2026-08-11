@@ -20,12 +20,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "SceneWalk.hpp"
 
+#include <obs.hpp>
+
 #include <QWidget>
 
 #include <vector>
 
 class QLabel;
 class QScrollArea;
+class QTimer;
 class QVBoxLayout;
 
 /*
@@ -41,25 +44,55 @@ class XRayDock : public QWidget {
 public:
 	explicit XRayDock(QWidget *parent = nullptr);
 
+	/*
+	 * Drops the watches explicitly. Left to the implicit destructor they
+	 * would be torn down after ~QWidget, leaving a window in which a libobs
+	 * signal on another thread could reach a half-destroyed object.
+	 */
+	~XRayDock() override;
+
 public slots:
 	/*
-	 * Rebuilds the tree from the current program scene.
+	 * Rebuilds the tree from the current program scene and rewires the
+	 * signal watches to match it.
 	 *
-	 * Both slots touch widgets, so they must run on the UI thread. Frontend
-	 * events already arrive there (OnEvent dispatches synchronously from
-	 * OBSBasic), but the per-scene libobs signals added in the next phase do
-	 * not -- those have to reach these through a queued connection.
+	 * Every slot here touches widgets, so all of them must run on the UI
+	 * thread. Frontend events already arrive there -- OnEvent dispatches
+	 * synchronously from OBSBasic -- but libobs scene signals do not, so
+	 * those reach scheduleRefresh() through a queued connection.
 	 */
 	void refresh();
 
-	/* Drops every row and shows the empty state. */
+	/* Drops every row and every watch, and shows the empty state. */
 	void clear();
 
+	/*
+	 * Coalescing entry point for libobs signals. A single edit can produce a
+	 * burst -- removing a group emits item_remove per child plus a reorder --
+	 * and a scene collection load emits thousands, so the rebuild is deferred
+	 * behind a short timer rather than run per signal.
+	 */
+	void scheduleRefresh();
+
 private:
+	static void onContainerChanged(void *data, calldata_t *cd);
+	static void onSourceChanged(void *data, calldata_t *cd);
+
 	void addRows(const std::vector<xray::Node> &nodes, int depth);
+	void rewatch(const std::vector<xray::Watch> &watches);
 
 	QScrollArea *scrollArea = nullptr;
 	QWidget *content = nullptr;
 	QVBoxLayout *contentLayout = nullptr;
 	QLabel *placeholder = nullptr;
+	QTimer *refreshTimer = nullptr;
+
+	/*
+	 * OBSSignal connects with signal_handler_connect_ref(), which takes a
+	 * reference on the handler itself rather than the source. The handler
+	 * therefore outlives its source, disconnection stays safe after the
+	 * source is gone, and nothing here keeps a source alive -- so the
+	 * destroy signal still fires.
+	 */
+	std::vector<OBSSignal> watches;
 };

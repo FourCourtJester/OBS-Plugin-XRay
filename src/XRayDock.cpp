@@ -23,13 +23,44 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFrame>
 #include <QLabel>
 #include <QLayoutItem>
+#include <QMetaObject>
 #include <QScrollArea>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int INDENT_PX = 14;
 constexpr int ROW_MARGIN_PX = 4;
+
+/*
+ * Long enough to swallow the burst from one user action, short enough that the
+ * panel still feels live.
+ */
+constexpr int COALESCE_MS = 50;
+
+/*
+ * Structural signals on a scene or group source.
+ *
+ * The reorder signal is "reorder", not "item_reorder" -- see obs_scene_signals[]
+ * in obs-scene.c. "refresh" covers the bulk rebuilds that individual item
+ * signals do not announce.
+ *
+ * item_transform is deliberately absent. It fires continuously while an item is
+ * dragged in the preview, and this dock renders nothing derived from a
+ * transform, so subscribing would be pure churn. item_select and item_deselect
+ * are absent for the same reason: selection stays local to the dock.
+ */
+const char *const CONTAINER_SIGNALS[] = {
+	"item_add", "item_remove", "reorder", "refresh", "item_visible", "item_locked",
+};
+
+/* Leaf sources only need to redraw when their name or their existence changes. */
+const char *const SOURCE_SIGNALS[] = {
+	"rename",
+	"destroy",
+	"remove",
+};
 
 /*
  * Phase 2 renders names only. Weight and slant are here so the walk can be
@@ -88,11 +119,23 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	layout->addWidget(placeholder);
 	layout->addWidget(scrollArea);
 
+	refreshTimer = new QTimer(this);
+	refreshTimer->setSingleShot(true);
+	refreshTimer->setInterval(COALESCE_MS);
+	connect(refreshTimer, &QTimer::timeout, this, &XRayDock::refresh);
+
 	clear();
+}
+
+XRayDock::~XRayDock()
+{
+	watches.clear();
 }
 
 void XRayDock::clear()
 {
+	watches.clear();
+
 	while (QLayoutItem *item = contentLayout->takeAt(0)) {
 		if (QWidget *widget = item->widget())
 			widget->deleteLater();
@@ -105,18 +148,67 @@ void XRayDock::clear()
 	scrollArea->setVisible(false);
 }
 
+void XRayDock::scheduleRefresh()
+{
+	refreshTimer->start();
+}
+
+void XRayDock::onContainerChanged(void *data, calldata_t *)
+{
+	/*
+	 * Scene signals arrive on whichever thread made the change, never
+	 * reliably the UI thread, so nothing here may touch a widget directly.
+	 */
+	QMetaObject::invokeMethod(static_cast<XRayDock *>(data), "scheduleRefresh", Qt::QueuedConnection);
+}
+
+void XRayDock::onSourceChanged(void *data, calldata_t *)
+{
+	QMetaObject::invokeMethod(static_cast<XRayDock *>(data), "scheduleRefresh", Qt::QueuedConnection);
+}
+
 void XRayDock::refresh()
 {
+	refreshTimer->stop();
 	clear();
 
-	const std::vector<xray::Node> tree = xray::walk_program_scene();
-	if (tree.empty())
+	const xray::WalkResult result = xray::walk_program_scene();
+
+	/*
+	 * Watches are rewired even when nothing is rendered. The program scene is
+	 * always watched, so adding the first scene source to an empty program
+	 * scene still wakes the dock up.
+	 */
+	rewatch(result.watches);
+
+	if (result.tree.empty())
 		return;
 
-	addRows(tree, 0);
+	addRows(result.tree, 0);
 
 	placeholder->setVisible(false);
 	scrollArea->setVisible(true);
+}
+
+void XRayDock::rewatch(const std::vector<xray::Watch> &sources)
+{
+	for (const xray::Watch &entry : sources) {
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(entry.uuid.c_str());
+		if (!source)
+			continue;
+
+		signal_handler_t *handler = obs_source_get_signal_handler(source);
+		if (!handler)
+			continue;
+
+		if (entry.container) {
+			for (const char *signal : CONTAINER_SIGNALS)
+				watches.emplace_back(handler, signal, onContainerChanged, this);
+		}
+
+		for (const char *signal : SOURCE_SIGNALS)
+			watches.emplace_back(handler, signal, onSourceChanged, this);
+	}
 }
 
 void XRayDock::addRows(const std::vector<xray::Node> &nodes, int depth)
