@@ -1,59 +1,67 @@
-# OBS Plugin Template
+# XRay
 
-## Introduction
+An OBS Studio dock that shows you what is inside the scenes nested in your current scene.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+## The problem
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+OBS gives no way to see inside a scene used as a source within another scene. If Scene A contains
+Scene B as a source, the Sources dock shows one row labelled "Scene B" and you have to trust that its
+children are configured and visible as intended. Verifying it means leaving the current scene, opening
+Scene B, checking, and coming back — during a live show.
 
-## Supported Build Environments
+OBS already does this for groups, which expand inline in the Sources dock. Groups are scenes
+internally; scene sources just do not get the same treatment. XRay adds it.
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+## What it does
 
-## Quick Start
+Registers a dock named **SubScene Sources**. When the program scene contains scene sources, the dock
+lists them recursively — each subscene's children indented one level beneath it, to arbitrary depth —
+with the standard visibility, lock, and reorder controls on every row.
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+Changes made in the dock apply to the underlying scene, and therefore show up everywhere that scene is
+used. That is the intended behaviour, not a side effect.
 
-## Documentation
+## Status
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+Early. The dock registers and appears under **View → Docks**; it does not walk scenes yet.
 
-Suggested reading to get up and running:
+| Phase | | |
+|---|---|---|
+| 1 | Stub dock, registered on `FINISHED_LOADING` | done |
+| 2 | Read-only recursive walk with pruning | next |
+| 3 | Live updates from per-scene signals | |
+| 4 | Visibility and lock toggles | |
+| 5 | Within-scene reorder | |
+| 6 | Visual parity with the Sources dock | |
 
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
+## Requirements
 
-## GitHub Actions & CI
+- OBS Studio 30.0.0 or later. `obs_frontend_add_dock_by_id()` does not exist before 30.0, so the module
+  refuses to load below that and logs why.
+- Built against OBS 31.1.1 headers and Qt 6.8.3 (obs-deps `2025-07-11`).
 
-Default GitHub Actions workflows are available for the following repository actions:
+Note that OBS and the plugin share one Qt instance in-process, so a Qt ABI mismatch is undefined
+behaviour that cannot be detected at runtime — only prevented at build time. Expect per-OBS-major
+builds rather than one universal binary.
 
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+## Building
 
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
+| Platform | Toolchain |
+|---|---|
+| Windows | Visual Studio 17 2022, CMake 3.30.5 |
+| macOS | Xcode 16.0, CMake 3.30.5 |
+| Ubuntu 24.04 | CMake 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-### Retrieving build artifacts
+The build follows [`obs-plugintemplate`](https://github.com/obsproject/obs-plugintemplate) — see its
+[wiki](https://github.com/obsproject/obs-plugintemplate/wiki) for environment setup. `ENABLE_QT` and
+`ENABLE_FRONTEND_API` are both `ON`; this is a dock plugin and neither is optional.
 
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
+## CI
 
-### Building a Release
+Workflows build Windows, macOS, and Ubuntu, and check formatting with `clang-format` and `gersemi`.
+They run on pushes to `master`/`main`/`release/**`, on tags, on pull requests, and via manual
+**workflow_dispatch** — pushing a topic branch on its own does not trigger a build.
 
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
+## License
 
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+GPL-2.0-or-later. See [LICENSE](LICENSE).

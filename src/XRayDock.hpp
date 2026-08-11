@@ -16,24 +16,27 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include <plugin-support.h>
+#pragma once
 
-const char *PLUGIN_NAME = "@CMAKE_PROJECT_NAME@";
-const char *PLUGIN_VERSION = "@CMAKE_PROJECT_VERSION@";
+#include <QWidget>
 
-void obs_log(int log_level, const char *format, ...)
-{
-	size_t length = 4 + strlen(PLUGIN_NAME) + strlen(format);
+class QLabel;
+class QVBoxLayout;
 
-	char *template = malloc(length + 1);
+/*
+ * The SubScene Sources panel.
+ *
+ * Ownership note: this widget is handed to obs_frontend_add_dock_by_id(), which
+ * wraps it in an OBSDock parented to the main window and takes ownership of it.
+ * Never delete an instance directly -- call obs_frontend_remove_dock() instead.
+ */
+class XRayDock : public QWidget {
+	Q_OBJECT
 
-	snprintf(template, length, "[%s] %s", PLUGIN_NAME, format);
+public:
+	explicit XRayDock(QWidget *parent = nullptr);
 
-	va_list(args);
-
-	va_start(args, format);
-	blogva(log_level, template, args);
-	va_end(args);
-
-	free(template);
-}
+private:
+	QVBoxLayout *layout = nullptr;
+	QLabel *placeholder = nullptr;
+};

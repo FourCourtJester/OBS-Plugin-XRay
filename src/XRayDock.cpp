@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+XRay
+Copyright (C) 2026 FourCourtJester <shaun@mse.gg>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,19 +16,24 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include "XRayDock.hpp"
+
 #include <obs-module.h>
-#include <plugin-support.h>
 
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+#include <QLabel>
+#include <QVBoxLayout>
 
-bool obs_module_load(void)
+XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 {
-	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
-	return true;
-}
+	setObjectName("xrayDock");
+	setMinimumWidth(150);
 
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
+	placeholder = new QLabel(obs_module_text("Dock.Empty"), this);
+	placeholder->setAlignment(Qt::AlignCenter);
+	placeholder->setWordWrap(true);
+	placeholder->setEnabled(false);
+
+	layout = new QVBoxLayout(this);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->addWidget(placeholder);
 }
