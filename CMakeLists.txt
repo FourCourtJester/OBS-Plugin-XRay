@@ -8,6 +8,13 @@ project(${_name} VERSION ${_version})
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
 option(ENABLE_QT "Use Qt functionality" ON)
 
+# Off by default, and deliberately not wired into CI. The harness supplies its
+# own libobs symbols, which is fine where they are plain functions but is at
+# best warning-prone under MSVC, where obs.h marks them __declspec(dllexport)
+# unconditionally. Untested there, so it stays opt-in rather than risking the
+# Windows build.
+option(ENABLE_TESTS "Build the SceneWalk test harness" OFF)
+
 include(compilerconfig)
 include(defaults)
 include(helpers)
@@ -50,3 +57,24 @@ target_sources(
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+if(ENABLE_TESTS)
+  enable_testing()
+
+  add_executable(test-scene-walk tests/test_scene_walk.cpp src/SceneWalk.cpp)
+
+  # Headers only. The harness defines the libobs entry points SceneWalk uses, so
+  # linking the real library would collide with every one of them.
+  target_include_directories(
+    test-scene-walk
+    PRIVATE
+      src
+      $<TARGET_PROPERTY:OBS::libobs,INTERFACE_INCLUDE_DIRECTORIES>
+      $<TARGET_PROPERTY:OBS::obs-frontend-api,INTERFACE_INCLUDE_DIRECTORIES>
+  )
+
+  # The stub definitions do not repeat obs.h's dllexport annotation.
+  set_target_properties(test-scene-walk PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
+
+  add_test(NAME scene-walk COMMAND test-scene-walk)
+endif()

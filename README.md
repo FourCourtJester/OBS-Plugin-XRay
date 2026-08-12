@@ -91,6 +91,32 @@ The build follows [`obs-plugintemplate`](https://github.com/obsproject/obs-plugi
 [wiki](https://github.com/obsproject/obs-plugintemplate/wiki) for environment setup. `ENABLE_QT` and
 `ENABLE_FRONTEND_API` are both `ON`; this is a dock plugin and neither is optional.
 
+## Tests
+
+`SceneWalk` is the only Qt-free part of the plugin, and `tests/test_scene_walk.cpp` exercises it
+against a stand-in libobs defined in the test file itself. No OBS installation is needed and nothing
+has to be running — each case builds a scene graph by hand.
+
+```sh
+cmake --preset ubuntu-x86_64 -DENABLE_TESTS=ON
+cmake --build --preset ubuntu-x86_64
+ctest --test-dir build_x86_64 --output-on-failure
+```
+
+Off by default and not wired into CI. The harness supplies its own libobs symbols, which is fine
+where those are plain functions but is at best warning-prone under MSVC, where `obs.h` marks them
+`__declspec(dllexport)` unconditionally — untested there, so it stays opt-in rather than risking the
+Windows build.
+
+What it covers is the part that is easy to get quietly wrong and hard to spot in the UI: asymmetric
+pruning, which containers get watched, the ownership of items inside groups, and the ordering
+arithmetic behind a drag.
+
+What it does not cover is whether the assumptions about libobs are right. Every assumption the
+plugin makes is also baked into the stubs, so a wrong one passes here and fails in OBS — which is
+exactly how the display-order bug survived until it was seen on screen. When a case disagrees with
+OBS, the stub is what is wrong.
+
 ## CI
 
 Workflows build Windows, macOS, and Ubuntu, and check formatting with `clang-format` and `gersemi`.
