@@ -82,7 +82,26 @@ The build follows [`obs-plugintemplate`](https://github.com/obsproject/obs-plugi
 
 Workflows build Windows, macOS, and Ubuntu, and check formatting with `clang-format` and `gersemi`.
 They run on pushes to `master`/`main`/`release/**`, on tags, on pull requests, and via manual
-**workflow_dispatch** — pushing a topic branch on its own does not trigger a build.
+**workflow_dispatch** — pushing a topic branch on its own does not trigger a build. `check-format`
+additionally only runs on `master`/`main` pushes, so a `release/**` push skips it; to exercise it on
+another branch, dispatch the **Pull Request** workflow against that branch.
+
+### Formatter versions
+
+Match the versions CI pins, or you will chase differences that are not real:
+
+| Tool | Version |
+|---|---|
+| `clang-format` | 19.1.1 |
+| `gersemi` | 0.21.0 |
+
+gersemi 0.28 in particular reformats argument lists differently and will flag files CI accepts.
+
+The two format actions run `brew update` before installing. GitHub runners set
+`HOMEBREW_NO_AUTO_UPDATE=1` and ship a Homebrew that can be weeks stale, and the `obsproject/tools`
+formulae are written against current Homebrew — without the update, `brew install` fails to parse
+the formula and the job dies with `unknown install step: run` before reading a single source file.
+That failure is inherited from `obs-plugintemplate` and affects any plugin generated from it.
 
 ## License
 
