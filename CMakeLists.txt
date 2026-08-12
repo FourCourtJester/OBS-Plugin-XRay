@@ -43,6 +43,8 @@ target_sources(
     src/SceneWalk.hpp
     src/XRayDock.cpp
     src/XRayDock.hpp
+    src/XRayList.cpp
+    src/XRayList.hpp
     src/XRayRow.cpp
     src/XRayRow.hpp
 )

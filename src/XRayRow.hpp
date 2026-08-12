@@ -21,20 +21,23 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "SceneWalk.hpp"
 
 #include <QFrame>
+#include <QPoint>
 
 class QCheckBox;
+class QHBoxLayout;
 class QLabel;
+class QLineEdit;
 
 /*
- * One row of the tree: icon, name, visibility and lock.
+ * One row of the tree: expand, icon, name, visibility and lock.
  *
  * Built to mirror OBS's own SourceTreeItem -- same child order, same zero
  * margins and spacing, and above all the same "class" properties. OBS's themes
- * style the eye and lock entirely through .checkbox-icon, .indicator-visibility
- * and .indicator-lock, all of which are Qt class selectors matching the widget's
- * class property rather than its C++ type. Setting the same strings gets the
- * real themed controls, in whatever theme the user is running, with no icon
- * assets shipped and nothing to keep in sync.
+ * style the eye, lock and expand arrow entirely through .checkbox-icon,
+ * .indicator-visibility, .indicator-lock and .indicator-expand, all of which
+ * are Qt class selectors matching the widget's class property rather than its
+ * C++ type. Setting the same strings gets the real themed controls, in whatever
+ * theme the user is running, with no icon assets shipped.
  */
 class XRayRow : public QFrame {
 	Q_OBJECT
@@ -42,16 +45,44 @@ class XRayRow : public QFrame {
 public:
 	XRayRow(const xray::Node &node, int depth, QWidget *parent = nullptr);
 
+	const std::string &ownerUuid() const { return owner; }
+	int64_t itemId() const { return item; }
+	bool hasChildren() const { return branch; }
+
+signals:
+	/* Emitted after writing "collapsed", so the dock can redraw. */
+	void collapsedChanged();
+
+	/* Asks the list to begin a drag for this row. */
+	void dragRequested(XRayRow *row, const QPoint &globalPos);
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override;
+	void mouseMoveEvent(QMouseEvent *event) override;
+	void mouseDoubleClickEvent(QMouseEvent *event) override;
+	bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
 	void onVisibilityToggled(bool checked);
 	void onLockToggled(bool checked);
+	void onExpandToggled(bool checked);
 
 private:
-	std::string ownerUuid;
-	int64_t itemId = -1;
+	void enterEditMode();
+	void exitEditMode(bool save);
 
+	std::string owner;
+	std::string sourceUuid;
+	int64_t item = -1;
+	bool branch = false;
+
+	QPoint pressPos;
+
+	QHBoxLayout *box = nullptr;
+	QCheckBox *expand = nullptr;
 	QLabel *iconLabel = nullptr;
 	QLabel *label = nullptr;
+	QLineEdit *editor = nullptr;
 	QCheckBox *vis = nullptr;
 	QCheckBox *lock = nullptr;
 };

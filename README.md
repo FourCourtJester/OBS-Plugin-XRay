@@ -23,9 +23,9 @@ used. That is the intended behaviour, not a side effect.
 
 ## Status
 
-Usable. The dock renders the nested contents of the program scene as a live indented list with
-working visibility and lock toggles on every row, using OBS's own source icons and themed eye/lock
-controls. Reordering is not wired up yet.
+Feature-complete for v1.0. The dock renders the nested contents of the program scene as a live
+indented list with visibility, lock, expand/collapse, inline rename and drag-to-reorder, using OBS's
+own source icons and themed controls throughout.
 
 | Phase | | |
 |---|---|---|
@@ -33,8 +33,8 @@ controls. Reordering is not wired up yet.
 | 2 | Read-only recursive walk with pruning | done |
 | 3 | Live updates from per-scene signals | done |
 | 4 | Visibility and lock toggles | done |
-| 5 | Within-scene reorder | next |
-| 6 | Visual parity with the Sources dock | |
+| 5 | Within-scene reorder | done |
+| 6 | Visual parity with the Sources dock | done |
 
 ### Theme integration
 
@@ -44,7 +44,15 @@ Qt's meta-object system rather than by linking `OBSBasic`. The eye and lock are 
 carrying the same `class` properties OBS uses, `checkbox-icon indicator-visibility` and
 `checkbox-icon indicator-lock`, which are Qt class selectors, so the active theme paints them.
 
-Both follow the user's theme automatically, including themes that do not exist yet.
+Expand/collapse is the same again — a `.indicator-expand` checkbox in the row, which is how OBS does
+it too. OBS's Sources list is flat, not a tree widget, and the themes carry no `QTreeView` rules at
+all, so a real tree widget would have looked *less* like OBS rather than more.
+
+Collapsed state is stored on the scene item's private settings under `collapsed` — the same key
+OBS's own Sources dock uses for groups. The two docks therefore agree on what is collapsed, and the
+state persists with the scene collection for free.
+
+All of it follows the user's theme automatically, including themes that do not exist yet.
 
 ### What the dock shows
 
@@ -55,6 +63,11 @@ listed, because seeing inside the subscene is the point.
 
 A scene referenced twice is drawn twice; there is no deduplication. A scene that appears on its own
 ancestor path is marked `(recursive)` and not descended into.
+
+Rows can be dragged to reorder, but only among rows sharing their owning scene — rows at different
+depths belong to different scenes, so a position "between" them does not exist. Candidate drop points
+are filtered to matching owners, so the drop indicator only ever appears where a release will
+actually land.
 
 ## Requirements
 

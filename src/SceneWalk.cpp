@@ -54,11 +54,18 @@ void describe_item(Node &node, obs_sceneitem_t *item, obs_source_t *owner, obs_s
 {
 	node.name = safe_str(obs_source_get_name(source));
 	node.source_id = safe_str(obs_source_get_id(source));
+	node.source_uuid = safe_str(obs_source_get_uuid(source));
 	node.owner_uuid = safe_str(obs_source_get_uuid(owner));
 	node.item_id = obs_sceneitem_get_id(item);
 	node.visible = obs_sceneitem_visible(item);
 	node.locked = obs_sceneitem_locked(item);
+
+	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
+	node.collapsed = obs_data_get_bool(settings, "collapsed");
 }
+
+/* Scene item ids in the order libobs holds them, which is the order shown. */
+std::vector<int64_t> item_order(obs_scene_t *scene);
 
 obs_sceneitem_t *resolve_item(const std::string &owner_uuid, int64_t item_id)
 {
@@ -107,6 +114,20 @@ std::vector<OBSSceneItem> snapshot_items(obs_scene_t *scene)
 	std::vector<OBSSceneItem> items;
 	obs_scene_enum_items(scene, collect_item, &items);
 	return items;
+}
+
+std::vector<int64_t> item_order(obs_scene_t *scene)
+{
+	std::vector<int64_t> ids;
+	for (const OBSSceneItem &item : snapshot_items(scene))
+		ids.push_back(obs_sceneitem_get_id(item));
+	return ids;
+}
+
+obs_scene_t *resolve_scene(const std::string &owner_uuid, OBSSourceAutoRelease &owner)
+{
+	owner = obs_get_source_by_uuid(owner_uuid.c_str());
+	return owner ? obs_group_or_scene_from_source(owner) : nullptr;
 }
 
 std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state);
@@ -222,6 +243,71 @@ void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked
 {
 	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
 		obs_sceneitem_set_locked(item, locked);
+}
+
+void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
+	obs_data_set_bool(settings, "collapsed", collapsed);
+}
+
+void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id)
+{
+	if (item_id == before_item_id)
+		return;
+
+	OBSSourceAutoRelease owner;
+	obs_scene_t *scene = resolve_scene(owner_uuid, owner);
+	if (!scene)
+		return;
+
+	obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, item_id);
+	if (!item)
+		return;
+
+	/*
+	 * obs_sceneitem_set_order_position() detaches the item and then walks
+	 * that many steps down the remaining list, so the position it wants is
+	 * an index into the list with this item already taken out. Compute
+	 * against exactly that.
+	 */
+	std::vector<int64_t> ids = item_order(scene);
+	ids.erase(std::remove(ids.begin(), ids.end(), item_id), ids.end());
+
+	size_t position = ids.size();
+	if (before_item_id >= 0) {
+		auto anchor = std::find(ids.begin(), ids.end(), before_item_id);
+		if (anchor != ids.end())
+			position = static_cast<size_t>(std::distance(ids.begin(), anchor));
+	}
+
+	obs_sceneitem_set_order_position(item, static_cast<int>(position));
+}
+
+bool rename_source(const std::string &source_uuid, const std::string &new_name)
+{
+	if (new_name.empty())
+		return false;
+
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!source)
+		return false;
+
+	const char *current = obs_source_get_name(source);
+	if (current && new_name == current)
+		return true;
+
+	/* Names are an identity in the OBS UI, so a clash is refused. */
+	OBSSourceAutoRelease clash = obs_get_source_by_name(new_name.c_str());
+	if (clash)
+		return false;
+
+	obs_source_set_name(source, new_name.c_str());
+	return true;
 }
 
 } // namespace xray

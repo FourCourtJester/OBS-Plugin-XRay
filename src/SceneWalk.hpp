@@ -37,6 +37,20 @@ struct Node {
 	/* obs_source_get_id() of the row's source, used to pick its icon. */
 	std::string source_id;
 
+	/* Identifies the source itself, for rename. */
+	std::string source_uuid;
+
+	/*
+	 * Whether this branch is drawn collapsed. Read from the scene item's
+	 * private settings under "collapsed" -- the same key OBS's own Sources
+	 * dock uses for groups, so the two agree and the state persists with the
+	 * scene collection.
+	 *
+	 * Collapsing only hides rows. The subtree is still walked, because
+	 * pruning depends on what is underneath.
+	 */
+	bool collapsed = false;
+
 	/*
 	 * Identifies the scene item behind this row, for mutation. The pair is
 	 * deliberately not a pointer: a row can outlive the item it was built
@@ -113,5 +127,26 @@ WalkResult walk_program_scene();
  */
 void set_item_visible(const std::string &owner_uuid, int64_t item_id, bool visible);
 void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked);
+
+/* Writes the "collapsed" flag OBS itself uses, so both docks stay in step. */
+void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed);
+
+/*
+ * Moves item_id so it sits immediately above before_item_id within its owning
+ * scene; before_item_id of -1 moves it to the bottom.
+ *
+ * Anchoring on a sibling rather than on a row index is what makes this correct
+ * under pruning: the rows on screen are a subset of the scene's items at the
+ * top level, so a displayed index is not an order position. The real position
+ * is computed from the scene's own ordering at the moment of the drop.
+ */
+void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id);
+
+/*
+ * Renames the source behind a row. Returns false without renaming if the name
+ * is empty or already taken -- source names are the identity OBS uses in the
+ * UI, and duplicates are rejected rather than silently uniquified.
+ */
+bool rename_source(const std::string &source_uuid, const std::string &new_name);
 
 } // namespace xray

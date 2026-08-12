@@ -17,21 +17,19 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayDock.hpp"
+#include "XRayList.hpp"
 #include "XRayRow.hpp"
 
 #include <obs-module.h>
 
 #include <QFrame>
 #include <QLabel>
-#include <QLayoutItem>
 #include <QMetaObject>
 #include <QScrollArea>
 #include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
-
-constexpr int ROW_MARGIN_PX = 4;
 
 /*
  * Long enough to swallow the burst from one user action, short enough that the
@@ -69,16 +67,10 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	setObjectName("xrayDock");
 	setMinimumWidth(150);
 
-	content = new QWidget;
-	content->setObjectName("xrayDockContent");
-
-	contentLayout = new QVBoxLayout(content);
-	contentLayout->setContentsMargins(0, ROW_MARGIN_PX, 0, ROW_MARGIN_PX);
-	contentLayout->setSpacing(0);
-	contentLayout->addStretch(1);
+	list = new XRayList;
 
 	scrollArea = new QScrollArea(this);
-	scrollArea->setWidget(content);
+	scrollArea->setWidget(list);
 	scrollArea->setWidgetResizable(true);
 	scrollArea->setFrameShape(QFrame::NoFrame);
 
@@ -97,6 +89,8 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	refreshTimer->setInterval(COALESCE_MS);
 	connect(refreshTimer, &QTimer::timeout, this, &XRayDock::refresh);
 
+	connect(list, &XRayList::reorderRequested, this, &XRayDock::applyReorder);
+
 	clear();
 }
 
@@ -108,14 +102,7 @@ XRayDock::~XRayDock()
 void XRayDock::clear()
 {
 	watches.clear();
-
-	while (QLayoutItem *item = contentLayout->takeAt(0)) {
-		if (QWidget *widget = item->widget())
-			widget->deleteLater();
-		delete item;
-	}
-
-	contentLayout->addStretch(1);
+	list->clearRows();
 
 	placeholder->setVisible(true);
 	scrollArea->setVisible(false);
@@ -140,8 +127,25 @@ void XRayDock::onSourceChanged(void *data, calldata_t *)
 	QMetaObject::invokeMethod(static_cast<XRayDock *>(data), "scheduleRefresh", Qt::QueuedConnection);
 }
 
+void XRayDock::applyReorder(const std::string &ownerUuid, int64_t itemId, int64_t beforeItemId)
+{
+	/* libobs emits "reorder", which the watch turns into a rebuild. */
+	xray::move_item_before(ownerUuid, itemId, beforeItemId);
+}
+
 void XRayDock::refresh()
 {
+	/*
+	 * Never rebuild under an in-flight drag. QDrag::exec() runs a nested
+	 * event loop, so a scene signal arriving mid-drag would otherwise delete
+	 * the row whose mouseMoveEvent is still on the stack. Try again once the
+	 * drag has finished.
+	 */
+	if (list->isDragging()) {
+		refreshTimer->start();
+		return;
+	}
+
 	refreshTimer->stop();
 	clear();
 
@@ -187,11 +191,17 @@ void XRayDock::rewatch(const std::vector<xray::Watch> &sources)
 void XRayDock::addRows(const std::vector<xray::Node> &nodes, int depth)
 {
 	for (const xray::Node &node : nodes) {
-		XRayRow *row = new XRayRow(node, depth, content);
+		XRayRow *row = new XRayRow(node, depth, list);
+		list->addRow(row);
 
-		/* Keep the trailing stretch last so rows stay top-aligned. */
-		contentLayout->insertWidget(contentLayout->count() - 1, row);
+		connect(row, &XRayRow::collapsedChanged, this, &XRayDock::scheduleRefresh);
 
-		addRows(node.children, depth + 1);
+		/*
+		 * Collapsing hides rows only. The subtree was still walked --
+		 * pruning depends on what is underneath, so a collapsed branch
+		 * has to keep earning its place.
+		 */
+		if (!node.collapsed)
+			addRows(node.children, depth + 1);
 	}
 }

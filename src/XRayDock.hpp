@@ -29,7 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 class QLabel;
 class QScrollArea;
 class QTimer;
-class QVBoxLayout;
+class XRayList;
 
 /*
  * The SubScene Sources panel.
@@ -74,6 +74,9 @@ public slots:
 	 */
 	void scheduleRefresh();
 
+private slots:
+	void applyReorder(const std::string &ownerUuid, int64_t itemId, int64_t beforeItemId);
+
 private:
 	static void onContainerChanged(void *data, calldata_t *cd);
 	static void onSourceChanged(void *data, calldata_t *cd);
@@ -82,8 +85,7 @@ private:
 	void rewatch(const std::vector<xray::Watch> &watches);
 
 	QScrollArea *scrollArea = nullptr;
-	QWidget *content = nullptr;
-	QVBoxLayout *contentLayout = nullptr;
+	XRayList *list = nullptr;
 	QLabel *placeholder = nullptr;
 	QTimer *refreshTimer = nullptr;
 

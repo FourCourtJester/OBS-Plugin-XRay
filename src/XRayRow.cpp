@@ -21,10 +21,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMouseEvent>
 
 namespace {
 
@@ -95,8 +99,10 @@ QIcon source_icon(const std::string &source_id)
 
 XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	: QFrame(parent),
-	  ownerUuid(node.owner_uuid),
-	  itemId(node.item_id)
+	  owner(node.owner_uuid),
+	  sourceUuid(node.source_uuid),
+	  item(node.item_id),
+	  branch(!node.children.empty())
 {
 	setObjectName("xrayRow");
 
@@ -139,9 +145,30 @@ XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	iconLabel->setEnabled(node.visible);
 	label->setEnabled(node.visible);
 
-	QHBoxLayout *box = new QHBoxLayout(this);
+	box = new QHBoxLayout(this);
 	box->setContentsMargins(INDENT_PX * depth, 0, 0, 0);
 	box->setSpacing(0);
+
+	if (branch) {
+		/*
+		 * Checked means collapsed, matching OBS: the theme maps
+		 * :checked to the closed arrow and :unchecked to the open one.
+		 */
+		expand = new QCheckBox(this);
+		expand->setProperty("class", "checkbox-icon indicator-expand");
+		expand->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+		expand->setChecked(node.collapsed);
+		expand->setAccessibleName(obs_module_text("Row.Expand"));
+#ifdef __APPLE__
+		expand->setAttribute(Qt::WA_LayoutUsesWidgetRect);
+#endif
+		box->addWidget(expand);
+		connect(expand, &QCheckBox::toggled, this, &XRayRow::onExpandToggled);
+	} else {
+		/* Keeps leaf names aligned with their siblings' text. */
+		box->addSpacing(ICON_PX);
+	}
+
 	box->addWidget(iconLabel);
 	box->addSpacing(2);
 	box->addWidget(label);
@@ -160,10 +187,127 @@ void XRayRow::onVisibilityToggled(bool checked)
 	 * is always what the scene actually holds, including when the write is
 	 * dropped because the item has gone.
 	 */
-	xray::set_item_visible(ownerUuid, itemId, checked);
+	xray::set_item_visible(owner, item, checked);
 }
 
 void XRayRow::onLockToggled(bool checked)
 {
-	xray::set_item_locked(ownerUuid, itemId, checked);
+	xray::set_item_locked(owner, item, checked);
+}
+
+void XRayRow::onExpandToggled(bool checked)
+{
+	/*
+	 * Private settings emit no signal, so unlike visibility and lock this
+	 * one has to ask for the redraw itself.
+	 */
+	xray::set_item_collapsed(owner, item, checked);
+	emit collapsedChanged();
+}
+
+/* ---------------------------------------------------------------- rename */
+
+void XRayRow::mouseDoubleClickEvent(QMouseEvent *event)
+{
+	if (event->button() == Qt::LeftButton && !editor)
+		enterEditMode();
+	else
+		QFrame::mouseDoubleClickEvent(event);
+}
+
+void XRayRow::enterEditMode()
+{
+	setFocusPolicy(Qt::StrongFocus);
+
+	const int index = box->indexOf(label);
+	box->removeWidget(label);
+	label->hide();
+
+	editor = new QLineEdit(label->text(), this);
+	editor->setStyleSheet("background: none");
+	editor->selectAll();
+	editor->installEventFilter(this);
+	box->insertWidget(index, editor);
+	setFocusProxy(editor);
+	editor->setFocus();
+}
+
+void XRayRow::exitEditMode(bool save)
+{
+	if (!editor)
+		return;
+
+	const std::string entered = editor->text().toStdString();
+
+	setFocusProxy(nullptr);
+	const int index = box->indexOf(editor);
+	box->removeWidget(editor);
+	editor->deleteLater();
+	editor = nullptr;
+	setFocusPolicy(Qt::NoFocus);
+	box->insertWidget(index, label);
+	label->show();
+
+	if (!save)
+		return;
+
+	/*
+	 * A refused rename -- empty or already taken -- just leaves the name
+	 * alone. On success libobs emits "rename", which phase 3's watch turns
+	 * into a rebuild, so the row is never updated by hand here.
+	 */
+	xray::rename_source(sourceUuid, entered);
+}
+
+bool XRayRow::eventFilter(QObject *watched, QEvent *event)
+{
+	if (watched != editor)
+		return QFrame::eventFilter(watched, event);
+
+	if (event->type() == QEvent::FocusOut) {
+		/* Queued: Qt is still delivering, and exitEditMode destroys the editor. */
+		QMetaObject::invokeMethod(this, [this] { exitEditMode(true); }, Qt::QueuedConnection);
+		return false;
+	}
+
+	if (event->type() == QEvent::KeyPress) {
+		const int key = static_cast<QKeyEvent *>(event)->key();
+
+		if (key == Qt::Key_Escape) {
+			QMetaObject::invokeMethod(this, [this] { exitEditMode(false); }, Qt::QueuedConnection);
+			return true;
+		}
+
+		if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+			QMetaObject::invokeMethod(this, [this] { exitEditMode(true); }, Qt::QueuedConnection);
+			return true;
+		}
+	}
+
+	return QFrame::eventFilter(watched, event);
+}
+
+/* ------------------------------------------------------------------ drag */
+
+void XRayRow::mousePressEvent(QMouseEvent *event)
+{
+	if (event->button() == Qt::LeftButton)
+		pressPos = event->pos();
+
+	QFrame::mousePressEvent(event);
+}
+
+void XRayRow::mouseMoveEvent(QMouseEvent *event)
+{
+	if (!(event->buttons() & Qt::LeftButton) || editor) {
+		QFrame::mouseMoveEvent(event);
+		return;
+	}
+
+	if ((event->pos() - pressPos).manhattanLength() < QApplication::startDragDistance()) {
+		QFrame::mouseMoveEvent(event);
+		return;
+	}
+
+	emit dragRequested(this, event->globalPosition().toPoint());
 }
