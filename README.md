@@ -14,7 +14,7 @@ internally; scene sources just do not get the same treatment. XRay adds it.
 
 ## What it does
 
-Registers a dock named **SubScene Sources**. When the program scene contains scene sources, the dock
+Registers a dock named **Sources X-Ray**. When the program scene contains scene sources, the dock
 lists them recursively — each subscene's children indented one level beneath it, to arbitrary depth —
 with the standard visibility, lock, and reorder controls on every row.
 

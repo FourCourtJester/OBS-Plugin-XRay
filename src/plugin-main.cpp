@@ -38,6 +38,13 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
  */
 static constexpr uint32_t MINIMUM_OBS_VERSION = MAKE_SEMANTIC_VERSION(30, 0, 0);
 
+/*
+ * Deliberately still says "subscene" after the dock was renamed to Sources
+ * X-Ray. This id is the key OBS saves dock position and visibility under, so
+ * changing it would orphan everyone's saved layout and make the dock come up
+ * hidden again -- the exact symptom the post-load registration above fixes.
+ * The visible name lives in the locale file; this is not user-facing.
+ */
 static const char *DOCK_ID = "obs-xray-subscene-sources";
 
 static bool dock_registered = false;

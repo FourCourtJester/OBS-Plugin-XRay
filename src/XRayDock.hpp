@@ -32,7 +32,7 @@ class QTimer;
 class XRayList;
 
 /*
- * The SubScene Sources panel.
+ * The Sources X-Ray panel.
  *
  * Ownership note: this widget is handed to obs_frontend_add_dock_by_id(), which
  * wraps it in an OBSDock parented to the main window and takes ownership of it.
