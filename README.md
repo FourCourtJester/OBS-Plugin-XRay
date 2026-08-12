@@ -79,6 +79,18 @@ depths belong to different scenes, so a position "between" them does not exist. 
 are filtered to matching owners, so the drop indicator only ever appears where a release will
 actually land.
 
+### Dock registration timing
+
+The dock is registered in `obs_module_post_load()`, not on `OBS_FRONTEND_EVENT_FINISHED_LOADING`.
+That matters: in `OBSBasic::OBSInit` the order is modules loaded → `obs_post_load_modules()` →
+`restoreState()` of the saved dock layout → and only much later `FINISHED_LOADING`. A dock created
+on `FINISHED_LOADING` does not exist when the layout is restored, so Qt cannot place it and it comes
+up hidden and floating on every launch. Registering in post-load lands before the restore, so
+position and visibility persist.
+
+Only registration happens there. No scene collection is loaded yet, so the contents are filled in on
+`FINISHED_LOADING`.
+
 ## Requirements
 
 - OBS Studio 30.0.0 or later. `obs_frontend_add_dock_by_id()` does not exist before 30.0, so the module

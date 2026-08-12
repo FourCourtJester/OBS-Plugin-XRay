@@ -66,9 +66,6 @@ static void create_dock(void)
 	dock_widget = dock;
 	dock_registered = true;
 	obs_log(LOG_INFO, "dock registered as '%s'", DOCK_ID);
-
-	/* FINISHED_LOADING lands after the first scene is already active. */
-	dock->refresh();
 }
 
 static void destroy_dock(void)
@@ -85,9 +82,14 @@ static void frontend_event(enum obs_frontend_event event, void *)
 {
 	switch (event) {
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
-		/* Build here, not in obs_module_load() -- the frontend does not
-		 * exist yet at module load time. */
-		create_dock();
+		/*
+		 * Fill the dock in, but do not create it here -- see
+		 * obs_module_post_load(). By this point a scene collection is
+		 * loaded and a program scene is active, so there is something to
+		 * walk; at registration time there was not.
+		 */
+		if (dock_widget)
+			dock_widget->refresh();
 		break;
 
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
@@ -152,6 +154,28 @@ bool obs_module_load(void)
 
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;
+}
+
+void obs_module_post_load(void)
+{
+	if (!callback_registered)
+		return;
+
+	/*
+	 * The dock has to exist before OBS restores the saved layout, or it will
+	 * not be placed and will come up hidden and floating every launch --
+	 * which is exactly what happens when it is built on FINISHED_LOADING.
+	 *
+	 * In OBSBasic::OBSInit the order is: modules load (obs_load_all_modules2),
+	 * then obs_post_load_modules(), then restoreState() of the saved
+	 * DockState, and only much later OnEvent(FINISHED_LOADING). Registering
+	 * here lands before the restore, so position and visibility persist.
+	 *
+	 * Only registration happens here. Nothing is walked yet -- no scene
+	 * collection is loaded at this point -- so the contents wait for
+	 * FINISHED_LOADING.
+	 */
+	create_dock();
 }
 
 void obs_module_unload(void)
