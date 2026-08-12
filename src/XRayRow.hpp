@@ -48,6 +48,7 @@ public:
 	const std::string &ownerUuid() const { return owner; }
 	int64_t itemId() const { return item; }
 	bool hasChildren() const { return branch; }
+	bool isSelected() const { return selected; }
 
 signals:
 	/* Emitted after writing "collapsed", so the dock can redraw. */
@@ -57,6 +58,7 @@ signals:
 	void dragRequested(XRayRow *row, const QPoint &globalPos);
 
 protected:
+	void paintEvent(QPaintEvent *event) override;
 	void mousePressEvent(QMouseEvent *event) override;
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseDoubleClickEvent(QMouseEvent *event) override;
@@ -75,6 +77,7 @@ private:
 	std::string sourceUuid;
 	int64_t item = -1;
 	bool branch = false;
+	bool selected = false;
 
 	QPoint pressPos;
 

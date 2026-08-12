@@ -52,6 +52,8 @@ public:
 	 */
 	bool isDragging() const { return dragged != nullptr; }
 
+	const std::vector<XRayRow *> &rowWidgets() const { return rows; }
+
 signals:
 	/* A completed reorder, for the dock to apply. */
 	void reorderRequested(const std::string &ownerUuid, int64_t itemId, int64_t beforeItemId);

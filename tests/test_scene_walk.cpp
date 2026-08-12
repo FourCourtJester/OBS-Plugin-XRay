@@ -62,6 +62,9 @@ struct obs_sceneitem {
 	int64_t id = 0;
 	bool visible = true;
 	bool locked = false;
+	bool selected = false;
+	/* Tri-state, matching obs_data: unset until something writes it. */
+	bool collapsedSet = false;
 	bool collapsed = false;
 	long refs = 1;
 };
@@ -226,13 +229,31 @@ void obs_data_release(obs_data_t *d)
 
 bool obs_data_get_bool(obs_data_t *d, const char *key)
 {
-	return (d && d->item && std::string(key) == "collapsed") ? d->item->collapsed : false;
+	return (d && d->item && std::string(key) == "xray_collapsed") ? d->item->collapsed : false;
 }
 
 void obs_data_set_bool(obs_data_t *d, const char *key, bool v)
 {
-	if (d && d->item && std::string(key) == "collapsed")
+	if (d && d->item && std::string(key) == "xray_collapsed") {
 		d->item->collapsed = v;
+		d->item->collapsedSet = true;
+	}
+}
+
+bool obs_data_has_user_value(obs_data_t *d, const char *key)
+{
+	return d && d->item && std::string(key) == "xray_collapsed" && d->item->collapsedSet;
+}
+
+bool obs_sceneitem_selected(const obs_sceneitem_t *item)
+{
+	return item ? item->selected : false;
+}
+
+void obs_sceneitem_select(obs_sceneitem_t *item, bool select)
+{
+	if (item)
+		item->selected = select;
 }
 
 void obs_sceneitem_set_order_position(obs_sceneitem_t *item, int position)
@@ -683,6 +704,77 @@ int main()
 	      "G:GroupB\n"
 	      "  S:Nested\n"
 	      "S:SceneA\n");
+
+	/* --- collapse defaults, collapse-all, selection --- */
+
+	/* 8t. Branches start collapsed, so a deep tree opens tidy. The stub only
+	 * honours the "xray_collapsed" key, so this also proves the plugin is not
+	 * writing OBS's own "collapsed" key -- sharing that would collapse the
+	 * operator's groups in their real Sources dock. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *t1 = make("Sub", "scene");
+	add(t1, make("Leaf", "text"));
+	obs_sceneitem *ti = add(g_program, t1);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		check("branches start collapsed", r.tree.at(0).collapsed ? "collapsed" : "open", "collapsed");
+	}
+
+	/* 8u. An explicit choice sticks, in both directions. */
+	xray::set_item_collapsed("uuid-Program", ti->id, false);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		check("explicit expand sticks", r.tree.at(0).collapsed ? "collapsed" : "open", "open");
+	}
+	xray::set_item_collapsed("uuid-Program", ti->id, true);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		check("explicit collapse sticks", r.tree.at(0).collapsed ? "collapsed" : "open", "collapsed");
+	}
+
+	/* 8v. Collapse-all and expand-all reach nested branches, including ones
+	 * hidden inside a collapsed parent -- the walk never stops at a
+	 * collapsed node, so they are all reachable in one pass. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *outer = make("Outer", "scene");
+	obs_source *nested = make("Inner", "scene");
+	add(nested, make("Deep", "text"));
+	add(outer, nested);
+	add(g_program, outer);
+
+	xray::set_all_collapsed(false);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::Node &o = r.tree.at(0);
+		check("expand all reaches nested branches",
+		      std::string(o.collapsed ? "c" : "o") + (o.children.at(0).collapsed ? "c" : "o"), "oo");
+	}
+
+	xray::set_all_collapsed(true);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::Node &o = r.tree.at(0);
+		check("collapse all reaches nested branches",
+		      std::string(o.collapsed ? "c" : "o") + (o.children.at(0).collapsed ? "c" : "o"), "cc");
+	}
+
+	/* 8w. Selection is carried onto the row, which is what lets a pick in
+	 * OBS's Sources dock highlight and scroll to the match here. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *sel = make("Picked", "scene");
+	obs_sceneitem *si = add(g_program, sel);
+	add(g_program, make("Other", "scene"));
+	obs_sceneitem_select(si, true);
+	{
+		const xray::WalkResult r = xray::walk_program_scene();
+		std::string flags;
+		for (const xray::Node &n : r.tree)
+			flags += n.name + (n.selected ? "=on " : "=off ");
+		check("selection carried onto rows", flags, "Other=off Picked=on ");
+	}
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

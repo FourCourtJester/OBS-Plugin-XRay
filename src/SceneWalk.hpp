@@ -41,15 +41,24 @@ struct Node {
 	std::string source_uuid;
 
 	/*
-	 * Whether this branch is drawn collapsed. Read from the scene item's
-	 * private settings under "collapsed" -- the same key OBS's own Sources
-	 * dock uses for groups, so the two agree and the state persists with the
-	 * scene collection.
+	 * Whether this branch is drawn collapsed, and whether the scene item is
+	 * selected in OBS.
+	 *
+	 * Collapsed is stored on the scene item's private settings under a key of
+	 * this plugin's own, NOT the "collapsed" key OBS uses for groups. Sharing
+	 * that key would mean defaulting branches to collapsed also collapsed the
+	 * operator's groups in the real Sources dock, which is not this dock's
+	 * business. The cost is that the two lists no longer agree about group
+	 * collapse; that is the intended trade.
+	 *
+	 * Unset means collapsed, so deep trees open tidy. Once a row is toggled
+	 * the choice is explicit and persists with the scene collection.
 	 *
 	 * Collapsing only hides rows. The subtree is still walked, because
 	 * pruning depends on what is underneath.
 	 */
-	bool collapsed = false;
+	bool collapsed = true;
+	bool selected = false;
 
 	/*
 	 * Identifies the scene item behind this row, for mutation. The pair is
@@ -128,8 +137,10 @@ WalkResult walk_program_scene();
 void set_item_visible(const std::string &owner_uuid, int64_t item_id, bool visible);
 void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked);
 
-/* Writes the "collapsed" flag OBS itself uses, so both docks stay in step. */
 void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed);
+
+/* Collapses or expands every branch under the program scene, in one pass. */
+void set_all_collapsed(bool collapsed);
 
 /*
  * Moves item_id so it is drawn immediately above before_item_id; a

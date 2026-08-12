@@ -36,6 +36,13 @@ namespace {
  */
 constexpr int MAX_DEPTH = 32;
 
+/*
+ * Deliberately not "collapsed", which is OBS's own key for group collapse in
+ * the Sources dock. Branches here default to collapsed, and defaulting through
+ * that key would collapse the operator's groups in their real Sources dock.
+ */
+const char *const COLLAPSED_KEY = "xray_collapsed";
+
 struct State {
 	std::vector<std::string> ancestors;
 	WalkResult result;
@@ -59,9 +66,12 @@ void describe_item(Node &node, obs_sceneitem_t *item, obs_source_t *owner, obs_s
 	node.item_id = obs_sceneitem_get_id(item);
 	node.visible = obs_sceneitem_visible(item);
 	node.locked = obs_sceneitem_locked(item);
+	node.selected = obs_sceneitem_selected(item);
 
+	/* Unset means collapsed, so a deep tree opens tidy rather than sprawling. */
 	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
-	node.collapsed = obs_data_get_bool(settings, "collapsed");
+	node.collapsed = obs_data_has_user_value(settings, COLLAPSED_KEY) ? obs_data_get_bool(settings, COLLAPSED_KEY)
+									  : true;
 }
 
 /* Scene item ids in the order libobs holds them, which is the order shown. */
@@ -262,7 +272,32 @@ void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool col
 		return;
 
 	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
-	obs_data_set_bool(settings, "collapsed", collapsed);
+	obs_data_set_bool(settings, COLLAPSED_KEY, collapsed);
+}
+
+namespace {
+
+void collapse_branch(const std::vector<Node> &nodes, bool collapsed)
+{
+	for (const Node &node : nodes) {
+		if (node.children.empty())
+			continue;
+
+		set_item_collapsed(node.owner_uuid, node.item_id, collapsed);
+		collapse_branch(node.children, collapsed);
+	}
+}
+
+} // namespace
+
+void set_all_collapsed(bool collapsed)
+{
+	/*
+	 * Walked rather than enumerated, so this reaches exactly the branches
+	 * the dock draws -- including the ones currently hidden inside a
+	 * collapsed parent, since the walk never stops at a collapsed node.
+	 */
+	collapse_branch(walk_program_scene().tree, collapsed);
 }
 
 void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id)

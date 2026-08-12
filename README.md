@@ -25,7 +25,8 @@ used. That is the intended behaviour, not a side effect.
 
 Feature-complete for v1.0. The dock renders the nested contents of the program scene as a live
 indented list with visibility, lock, expand/collapse, inline rename and drag-to-reorder, using OBS's
-own source icons and themed controls throughout.
+own source icons and themed controls throughout. Branches start collapsed, with collapse-all and
+expand-all in the dock's toolbar.
 
 | Phase | | |
 |---|---|---|
@@ -48,9 +49,12 @@ Expand/collapse is the same again — a `.indicator-expand` checkbox in the row,
 it too. OBS's Sources list is flat, not a tree widget, and the themes carry no `QTreeView` rules at
 all, so a real tree widget would have looked *less* like OBS rather than more.
 
-Collapsed state is stored on the scene item's private settings under `collapsed` — the same key
-OBS's own Sources dock uses for groups. The two docks therefore agree on what is collapsed, and the
-state persists with the scene collection for free.
+Collapsed state is stored on the scene item's private settings under `xray_collapsed`, and
+deliberately **not** under `collapsed`, which is OBS's own key for group collapse. Branches here
+default to collapsed so a deep tree opens tidy, and defaulting through OBS's key would have
+collapsed the operator's groups in their real Sources dock. The trade is that the two lists no
+longer agree about group collapse; unset means collapsed, and once a row is toggled that choice
+persists with the scene collection.
 
 All of it follows the user's theme automatically, including themes that do not exist yet.
 
@@ -63,6 +67,12 @@ listed, because seeing inside the subscene is the point.
 
 A scene referenced twice is drawn twice; there is no deduplication. A scene that appears on its own
 ancestor path is marked `(recursive)` and not descended into.
+
+Selection follows OBS: picking a row in the stock Sources dock highlights the matching row here and
+scrolls it into view. Only rows that exist in both lists can respond — a plain source selected in
+the Sources dock is pruned out of this one, so nothing highlights. Scrolling happens only when the
+selection actually moves, never on an incidental rebuild. The reverse direction is not wired up:
+clicking a row here does not select it in OBS, since a nested selection cannot reach the preview.
 
 Rows can be dragged to reorder, but only among rows sharing their owning scene — rows at different
 depths belong to different scenes, so a position "between" them does not exist. Candidate drop points

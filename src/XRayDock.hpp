@@ -76,6 +76,8 @@ public slots:
 
 private slots:
 	void applyReorder(const std::string &ownerUuid, int64_t itemId, int64_t beforeItemId);
+	void collapseAll();
+	void expandAll();
 
 private:
 	static void onContainerChanged(void *data, calldata_t *cd);
@@ -84,10 +86,21 @@ private:
 	void addRows(const std::vector<xray::Node> &nodes, int depth);
 	void rewatch(const std::vector<xray::Watch> &watches);
 
+	/*
+	 * Brings the selected row into view, but only when the selection has
+	 * actually moved. Scrolling on every rebuild would drag the panel around
+	 * under anyone reading it, since a rebuild happens on any scene change.
+	 */
+	void revealSelection();
+
 	QScrollArea *scrollArea = nullptr;
 	XRayList *list = nullptr;
 	QLabel *placeholder = nullptr;
 	QTimer *refreshTimer = nullptr;
+
+	/* Identifies the row last scrolled to, so a repeat is a no-op. */
+	std::string revealedOwner;
+	int64_t revealedItem = -1;
 
 	/*
 	 * OBSSignal connects with signal_handler_connect_ref(), which takes a

@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPainter>
 
 namespace {
 
@@ -37,6 +38,9 @@ constexpr int ICON_PX = 16;
 
 /* One level of nesting, in pixels. */
 constexpr int INDENT_PX = 14;
+
+/* Matches --border_radius in OBS's stock themes. */
+constexpr int SELECTION_RADIUS_PX = 4;
 
 /*
  * OBS's source icons are Q_PROPERTYs on OBSBasic, populated by the active
@@ -102,7 +106,8 @@ XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	  owner(node.owner_uuid),
 	  sourceUuid(node.source_uuid),
 	  item(node.item_id),
-	  branch(!node.children.empty())
+	  branch(!node.children.empty()),
+	  selected(node.selected)
 {
 	setObjectName("xrayRow");
 
@@ -155,6 +160,14 @@ XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	/* Greyed out while hidden, as OBS does. */
 	iconLabel->setEnabled(node.visible);
 	label->setEnabled(node.visible);
+
+	if (selected) {
+		/* The row paints the highlight itself, so the text has to be
+		 * repainted in the matching colour or it disappears into it. */
+		QPalette selectedText = label->palette();
+		selectedText.setColor(QPalette::WindowText, palette().color(QPalette::HighlightedText));
+		label->setPalette(selectedText);
+	}
 
 	box = new QHBoxLayout(this);
 	box->setContentsMargins(INDENT_PX * depth, 0, 0, 0);
@@ -214,6 +227,25 @@ void XRayRow::onExpandToggled(bool checked)
 	 */
 	xray::set_item_collapsed(owner, item, checked);
 	emit collapsedChanged();
+}
+
+/*
+ * Mirrors the selection held in libobs, which is what the Sources dock writes
+ * when a row is clicked there. Painted rather than styled: these rows are plain
+ * widgets, not view items, so the theme's QListView::item:selected rule cannot
+ * reach them, and the palette is the closest theme-following equivalent.
+ */
+void XRayRow::paintEvent(QPaintEvent *event)
+{
+	if (selected) {
+		QPainter painter(this);
+		painter.setRenderHint(QPainter::Antialiasing);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(palette().highlight());
+		painter.drawRoundedRect(rect(), SELECTION_RADIUS_PX, SELECTION_RADIUS_PX);
+	}
+
+	QFrame::paintEvent(event);
 }
 
 /* ---------------------------------------------------------------- rename */

@@ -23,10 +23,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMetaObject>
+#include <QPointer>
 #include <QScrollArea>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -37,6 +40,8 @@ namespace {
  */
 constexpr int COALESCE_MS = 50;
 
+constexpr int TOOLBAR_MARGIN_PX = 4;
+
 /*
  * Structural signals on a scene or group source.
  *
@@ -46,11 +51,14 @@ constexpr int COALESCE_MS = 50;
  *
  * item_transform is deliberately absent. It fires continuously while an item is
  * dragged in the preview, and this dock renders nothing derived from a
- * transform, so subscribing would be pure churn. item_select and item_deselect
- * are absent for the same reason: selection stays local to the dock.
+ * transform, so subscribing would be pure churn.
+ *
+ * item_select and item_deselect are here so that picking a row in OBS's own
+ * Sources dock highlights and scrolls to the matching row here --
+ * SourceTree calls obs_sceneitem_select(), which is what raises them.
  */
 const char *const CONTAINER_SIGNALS[] = {
-	"item_add", "item_remove", "reorder", "refresh", "item_visible", "item_locked",
+	"item_add", "item_remove", "reorder", "refresh", "item_visible", "item_locked", "item_select", "item_deselect",
 };
 
 /* Leaf sources only need to redraw when their name or their existence changes. */
@@ -79,10 +87,34 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	placeholder->setWordWrap(true);
 	placeholder->setEnabled(false);
 
+	QToolButton *collapseButton = new QToolButton(this);
+	collapseButton->setText(obs_module_text("Dock.CollapseAll"));
+	collapseButton->setToolTip(obs_module_text("Dock.CollapseAll"));
+	collapseButton->setAutoRaise(true);
+
+	QToolButton *expandButton = new QToolButton(this);
+	expandButton->setText(obs_module_text("Dock.ExpandAll"));
+	expandButton->setToolTip(obs_module_text("Dock.ExpandAll"));
+	expandButton->setAutoRaise(true);
+
+	QWidget *toolbar = new QWidget(this);
+	toolbar->setObjectName("xrayToolbar");
+
+	QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbar);
+	toolbarLayout->setContentsMargins(TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX);
+	toolbarLayout->setSpacing(TOOLBAR_MARGIN_PX);
+	toolbarLayout->addWidget(collapseButton);
+	toolbarLayout->addWidget(expandButton);
+	toolbarLayout->addStretch(1);
+
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
 	layout->addWidget(placeholder);
 	layout->addWidget(scrollArea);
+	layout->addWidget(toolbar);
+
+	connect(collapseButton, &QToolButton::clicked, this, &XRayDock::collapseAll);
+	connect(expandButton, &QToolButton::clicked, this, &XRayDock::expandAll);
 
 	refreshTimer = new QTimer(this);
 	refreshTimer->setSingleShot(true);
@@ -127,6 +159,18 @@ void XRayDock::onSourceChanged(void *data, calldata_t *)
 	QMetaObject::invokeMethod(static_cast<XRayDock *>(data), "scheduleRefresh", Qt::QueuedConnection);
 }
 
+void XRayDock::collapseAll()
+{
+	xray::set_all_collapsed(true);
+	refresh();
+}
+
+void XRayDock::expandAll()
+{
+	xray::set_all_collapsed(false);
+	refresh();
+}
+
 void XRayDock::applyReorder(const std::string &ownerUuid, int64_t itemId, int64_t beforeItemId)
 {
 	/* libobs emits "reorder", which the watch turns into a rebuild. */
@@ -165,6 +209,45 @@ void XRayDock::refresh()
 
 	placeholder->setVisible(false);
 	scrollArea->setVisible(true);
+
+	revealSelection();
+}
+
+void XRayDock::revealSelection()
+{
+	XRayRow *found = nullptr;
+	for (XRayRow *row : list->rowWidgets()) {
+		if (row->isSelected()) {
+			found = row;
+			break;
+		}
+	}
+
+	if (!found) {
+		revealedOwner.clear();
+		revealedItem = -1;
+		return;
+	}
+
+	if (found->ownerUuid() == revealedOwner && found->itemId() == revealedItem)
+		return;
+
+	revealedOwner = found->ownerUuid();
+	revealedItem = found->itemId();
+
+	/*
+	 * Queued, because the rows were only just added and their geometry is
+	 * not settled until the layout has run. Guarded, because another rebuild
+	 * can land first and delete every row before this arrives.
+	 */
+	QPointer<XRayRow> target = found;
+	QMetaObject::invokeMethod(
+		this,
+		[this, target] {
+			if (target)
+				scrollArea->ensureWidgetVisible(target);
+		},
+		Qt::QueuedConnection);
 }
 
 void XRayDock::rewatch(const std::vector<xray::Watch> &sources)
