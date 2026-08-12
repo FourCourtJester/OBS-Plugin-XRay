@@ -171,7 +171,17 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 	/* Borrowed, not a new reference. */
 	obs_source_t *owner = obs_scene_get_source(scene);
 
-	for (const OBSSceneItem &item : snapshot_items(scene)) {
+	/*
+	 * Reversed, because obs_scene_enum_items() is not display order.
+	 * SourceTreeModel::enumItem does items.insert(0, item) as it enumerates,
+	 * so OBS's Sources dock shows the reverse of the enumeration: the
+	 * scene's first_item is the bottom row, not the top. Walking forwards
+	 * puts every list in this dock upside down relative to OBS.
+	 */
+	std::vector<OBSSceneItem> items = snapshot_items(scene);
+	std::reverse(items.begin(), items.end());
+
+	for (const OBSSceneItem &item : items) {
 		obs_source_t *source = obs_sceneitem_get_source(item);
 		if (!source)
 			continue;
@@ -270,21 +280,35 @@ void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t be
 		return;
 
 	/*
-	 * obs_sceneitem_set_order_position() detaches the item and then walks
-	 * that many steps down the remaining list, so the position it wants is
-	 * an index into the list with this item already taken out. Compute
-	 * against exactly that.
+	 * Worked out in display order, then converted back, rather than by index
+	 * arithmetic against the scene. Display order is the reverse of the
+	 * scene's own order, so "above" on screen is "after" in the scene, and
+	 * doing this by hand invites exactly the off-by-one that reversing
+	 * introduces.
 	 */
-	std::vector<int64_t> ids = item_order(scene);
-	ids.erase(std::remove(ids.begin(), ids.end(), item_id), ids.end());
+	std::vector<int64_t> display = item_order(scene);
+	std::reverse(display.begin(), display.end());
 
-	size_t position = ids.size();
-	if (before_item_id >= 0) {
-		auto anchor = std::find(ids.begin(), ids.end(), before_item_id);
-		if (anchor != ids.end())
-			position = static_cast<size_t>(std::distance(ids.begin(), anchor));
-	}
+	display.erase(std::remove(display.begin(), display.end(), item_id), display.end());
 
+	auto anchor = display.end();
+	if (before_item_id >= 0)
+		anchor = std::find(display.begin(), display.end(), before_item_id);
+
+	display.insert(anchor, item_id);
+
+	/* Back to the scene's own ordering. */
+	std::reverse(display.begin(), display.end());
+
+	const auto placed = std::find(display.begin(), display.end(), item_id);
+	const size_t position = static_cast<size_t>(std::distance(display.begin(), placed));
+
+	/*
+	 * obs_sceneitem_set_order_position() detaches the item and then walks
+	 * that many steps down what is left, so the position it wants is this
+	 * item's index in the finished list -- inserting at that index into the
+	 * list without it reproduces exactly the order computed above.
+	 */
 	obs_sceneitem_set_order_position(item, static_cast<int>(position));
 }
 

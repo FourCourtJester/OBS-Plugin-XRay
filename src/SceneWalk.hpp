@@ -132,13 +132,16 @@ void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked
 void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed);
 
 /*
- * Moves item_id so it sits immediately above before_item_id within its owning
- * scene; before_item_id of -1 moves it to the bottom.
+ * Moves item_id so it is drawn immediately above before_item_id; a
+ * before_item_id of -1 moves it to the bottom of the list. Both are stated in
+ * display order, which is what a drop actually means.
  *
- * Anchoring on a sibling rather than on a row index is what makes this correct
- * under pruning: the rows on screen are a subset of the scene's items at the
- * top level, so a displayed index is not an order position. The real position
- * is computed from the scene's own ordering at the moment of the drop.
+ * Two things make this less obvious than it looks. Display order is the reverse
+ * of the scene's own order -- OBS builds its list with items.insert(0, item),
+ * so first_item is the bottom row -- and at the top level the displayed rows
+ * are a pruned subset, so a row index is not an order position. Both are
+ * handled by resolving against the scene's real ordering at the moment of the
+ * drop rather than by arithmetic on what happens to be on screen.
  */
 void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id);
 

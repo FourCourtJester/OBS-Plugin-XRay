@@ -120,6 +120,17 @@ XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 	label->setAttribute(Qt::WA_TranslucentBackground);
 
+	/*
+	 * Both labels are display only, and both sit over the whole width of the
+	 * row. QLabel defaults to Qt::LinksAccessibleByMouse, which makes it
+	 * accept mouse presses and swallow the double-click before the row ever
+	 * sees it -- so renaming never started. Letting mouse events fall
+	 * straight through fixes that and keeps drags starting anywhere on the
+	 * row. The checkboxes are left alone; they need their own clicks.
+	 */
+	label->setAttribute(Qt::WA_TransparentForMouseEvents);
+	iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+
 	vis = new QCheckBox(this);
 	vis->setProperty("class", "checkbox-icon indicator-visibility");
 	vis->setChecked(node.visible);
@@ -291,8 +302,17 @@ bool XRayRow::eventFilter(QObject *watched, QEvent *event)
 
 void XRayRow::mousePressEvent(QMouseEvent *event)
 {
-	if (event->button() == Qt::LeftButton)
+	if (event->button() == Qt::LeftButton) {
 		pressPos = event->pos();
+
+		/*
+		 * Accepted rather than passed up. QWidget's default handler
+		 * ignores the press, which lets it propagate to the list and
+		 * costs this row the follow-up double-click.
+		 */
+		event->accept();
+		return;
+	}
 
 	QFrame::mousePressEvent(event);
 }
