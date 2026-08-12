@@ -23,18 +23,28 @@ used. That is the intended behaviour, not a side effect.
 
 ## Status
 
-Early. The dock registers under **View → Docks** and renders the nested contents of the program
-scene as a live indented list — it follows adds, removals, reorders, renames and scene cuts as they
-happen. Nothing in it is interactive yet: the rows are display only.
+Usable. The dock renders the nested contents of the program scene as a live indented list with
+working visibility and lock toggles on every row, using OBS's own source icons and themed eye/lock
+controls. Reordering is not wired up yet.
 
 | Phase | | |
 |---|---|---|
 | 1 | Stub dock, registered on `FINISHED_LOADING` | done |
 | 2 | Read-only recursive walk with pruning | done |
 | 3 | Live updates from per-scene signals | done |
-| 4 | Visibility and lock toggles | next |
-| 5 | Within-scene reorder | |
+| 4 | Visibility and lock toggles | done |
+| 5 | Within-scene reorder | next |
 | 6 | Visual parity with the Sources dock | |
+
+### Theme integration
+
+The rows ship no icon assets. Source icons are read from the `Q_PROPERTY` set that OBS's theme
+populates on the main window — `cameraIcon`, `textIcon`, `sceneIcon` and friends — reached through
+Qt's meta-object system rather than by linking `OBSBasic`. The eye and lock are plain `QCheckBox`es
+carrying the same `class` properties OBS uses, `checkbox-icon indicator-visibility` and
+`checkbox-icon indicator-lock`, which are Qt class selectors, so the active theme paints them.
+
+Both follow the user's theme automatically, including themes that do not exist yet.
 
 ### What the dock shows
 

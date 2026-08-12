@@ -41,10 +41,36 @@ struct State {
 	WalkResult result;
 };
 
-const char *safe_name(obs_source_t *source)
+const char *safe_str(const char *value)
 {
-	const char *name = obs_source_get_name(source);
-	return name ? name : "";
+	return value ? value : "";
+}
+
+/*
+ * Fills in everything a row needs that comes from the scene item rather than
+ * from the source: what to mutate, and the current toggle states.
+ */
+void describe_item(Node &node, obs_sceneitem_t *item, obs_source_t *owner, obs_source_t *source)
+{
+	node.name = safe_str(obs_source_get_name(source));
+	node.source_id = safe_str(obs_source_get_id(source));
+	node.owner_uuid = safe_str(obs_source_get_uuid(owner));
+	node.item_id = obs_sceneitem_get_id(item);
+	node.visible = obs_sceneitem_visible(item);
+	node.locked = obs_sceneitem_locked(item);
+}
+
+obs_sceneitem_t *resolve_item(const std::string &owner_uuid, int64_t item_id)
+{
+	OBSSourceAutoRelease owner = obs_get_source_by_uuid(owner_uuid.c_str());
+	if (!owner)
+		return nullptr;
+
+	obs_scene_t *scene = obs_group_or_scene_from_source(owner);
+	if (!scene)
+		return nullptr;
+
+	return obs_scene_find_sceneitem_by_id(scene, item_id);
 }
 
 void watch(State &state, obs_source_t *source, bool container)
@@ -85,11 +111,12 @@ std::vector<OBSSceneItem> snapshot_items(obs_scene_t *scene)
 
 std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state);
 
-Node build_subscene(obs_source_t *source, obs_scene_t *subscene, int depth, State &state)
+Node build_subscene(obs_sceneitem_t *item, obs_source_t *owner, obs_source_t *source, obs_scene_t *subscene, int depth,
+		    State &state)
 {
 	Node node;
 	node.kind = NodeKind::SubScene;
-	node.name = safe_name(source);
+	describe_item(node, item, owner, source);
 
 	watch(state, source, true);
 
@@ -120,6 +147,9 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 	if (!scene || depth >= MAX_DEPTH)
 		return nodes;
 
+	/* Borrowed, not a new reference. */
+	obs_source_t *owner = obs_scene_get_source(scene);
+
 	for (const OBSSceneItem &item : snapshot_items(scene)) {
 		obs_source_t *source = obs_sceneitem_get_source(item);
 		if (!source)
@@ -135,7 +165,7 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 
 			Node node;
 			node.kind = NodeKind::Group;
-			node.name = safe_name(source);
+			describe_item(node, item, owner, source);
 			node.children = walk_scene(group, inside_subscene, depth + 1, state);
 
 			/*
@@ -147,12 +177,12 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 				nodes.push_back(std::move(node));
 
 		} else if (obs_scene_t *subscene = obs_scene_from_source(source)) {
-			nodes.push_back(build_subscene(source, subscene, depth, state));
+			nodes.push_back(build_subscene(item, owner, source, subscene, depth, state));
 
 		} else if (inside_subscene) {
 			Node node;
 			node.kind = NodeKind::Source;
-			node.name = safe_name(source);
+			describe_item(node, item, owner, source);
 			nodes.push_back(std::move(node));
 
 			watch(state, source, false);
@@ -180,6 +210,18 @@ WalkResult walk_program_scene()
 	state.result.tree = walk_scene(obs_scene_from_source(program), false, 0, state);
 
 	return std::move(state.result);
+}
+
+void set_item_visible(const std::string &owner_uuid, int64_t item_id, bool visible)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_visible(item, visible);
+}
+
+void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_locked(item, locked);
 }
 
 } // namespace xray

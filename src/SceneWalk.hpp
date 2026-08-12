@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,24 @@ enum class NodeKind {
 struct Node {
 	std::string name;
 	NodeKind kind = NodeKind::Source;
+
+	/* obs_source_get_id() of the row's source, used to pick its icon. */
+	std::string source_id;
+
+	/*
+	 * Identifies the scene item behind this row, for mutation. The pair is
+	 * deliberately not a pointer: a row can outlive the item it was built
+	 * from, so both are re-resolved at the moment of the toggle and the
+	 * operation is dropped if either has gone.
+	 *
+	 * owner_uuid is the scene or group source that contains the item --
+	 * groups are scenes internally, so their items belong to the group.
+	 */
+	std::string owner_uuid;
+	int64_t item_id = -1;
+
+	bool visible = true;
+	bool locked = false;
 
 	/*
 	 * Set when this subscene already appears on its own ancestor path. The
@@ -80,5 +99,19 @@ struct WalkResult {
  * never is, since the program scene itself is always watched.
  */
 WalkResult walk_program_scene();
+
+/*
+ * Toggles for a single scene item, addressed by owning source and item id.
+ *
+ * Both re-resolve the item and silently do nothing if the scene or the item has
+ * gone since the row was built -- which is the normal outcome of a click that
+ * races a deletion, not an error.
+ *
+ * The change lands on the underlying scene, so it shows up everywhere that
+ * scene is used. That is the intended behaviour of this dock, not a side
+ * effect, so there is deliberately no guard or confirmation here.
+ */
+void set_item_visible(const std::string &owner_uuid, int64_t item_id, bool visible);
+void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked);
 
 } // namespace xray

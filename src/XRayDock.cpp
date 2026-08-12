@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayDock.hpp"
+#include "XRayRow.hpp"
 
 #include <obs-module.h>
 
@@ -30,7 +31,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 namespace {
 
-constexpr int INDENT_PX = 14;
 constexpr int ROW_MARGIN_PX = 4;
 
 /*
@@ -61,33 +61,6 @@ const char *const SOURCE_SIGNALS[] = {
 	"destroy",
 	"remove",
 };
-
-/*
- * Phase 2 renders names only. Weight and slant are here so the walk can be
- * checked at a glance -- that groups really are being traversed, and that a
- * pruned branch really is gone. Phase 6 replaces all of this with the ported
- * OBS widget, where theming does the same job properly.
- */
-void applyKindStyle(QLabel *row, const xray::Node &node)
-{
-	QFont font = row->font();
-
-	switch (node.kind) {
-	case xray::NodeKind::SubScene:
-		font.setBold(true);
-		row->setProperty("xrayKind", "subscene");
-		break;
-	case xray::NodeKind::Group:
-		font.setItalic(true);
-		row->setProperty("xrayKind", "group");
-		break;
-	case xray::NodeKind::Source:
-		row->setProperty("xrayKind", "source");
-		break;
-	}
-
-	row->setFont(font);
-}
 
 } // namespace
 
@@ -214,14 +187,7 @@ void XRayDock::rewatch(const std::vector<xray::Watch> &sources)
 void XRayDock::addRows(const std::vector<xray::Node> &nodes, int depth)
 {
 	for (const xray::Node &node : nodes) {
-		QString text = QString::fromStdString(node.name);
-		if (node.cyclic)
-			text += QStringLiteral(" %1").arg(obs_module_text("Row.Cyclic"));
-
-		QLabel *row = new QLabel(text, content);
-		row->setTextInteractionFlags(Qt::NoTextInteraction);
-		row->setContentsMargins(ROW_MARGIN_PX + INDENT_PX * depth, 1, ROW_MARGIN_PX, 1);
-		applyKindStyle(row, node);
+		XRayRow *row = new XRayRow(node, depth, content);
 
 		/* Keep the trailing stretch last so rows stay top-aligned. */
 		contentLayout->insertWidget(contentLayout->count() - 1, row);
