@@ -36,6 +36,17 @@ runs:
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
         echo "/home/linuxbrew/.linuxbrew/opt/clang-format@19/bin" >> $GITHUB_PATH
+        # Runners set HOMEBREW_NO_AUTO_UPDATE=1 and ship a Homebrew that can be
+        # weeks stale. The obsproject/tools formulae are written against current
+        # Homebrew, so a stale one cannot parse them and brew install dies with
+        # "unknown install step: run" before any file is read.
+        brew update --quiet
+        # Current Homebrew skips third-party taps unless they are trusted, so
+        # obsproject/tools gets tapped and then ignored, and the formula never
+        # installs. Guarded because older Homebrew has no "trust" subcommand --
+        # and no need for one.
+        brew tap obsproject/tools || true
+        brew trust obsproject/tools || true
         brew install --quiet zsh
         echo ::endgroup::
 
