@@ -180,12 +180,11 @@ void XRayDock::applyReorder(const std::string &ownerUuid, int64_t itemId, int64_
 void XRayDock::refresh()
 {
 	/*
-	 * Never rebuild under an in-flight drag. QDrag::exec() runs a nested
-	 * event loop, so a scene signal arriving mid-drag would otherwise delete
-	 * the row whose mouseMoveEvent is still on the stack. Try again once the
-	 * drag has finished.
+	 * Never rebuild under a nested event loop. QDrag::exec() and QMenu::exec()
+	 * both keep delivering scene signals, so a rebuild would delete the row
+	 * whose event handler is still on the stack. Try again once it ends.
 	 */
-	if (list->isDragging()) {
+	if (list->isBusy()) {
 		refreshTimer->start();
 		return;
 	}

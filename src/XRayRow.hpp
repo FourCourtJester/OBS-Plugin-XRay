@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPoint>
 
 class QCheckBox;
+class QContextMenuEvent;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
@@ -62,6 +63,7 @@ protected:
 	void mousePressEvent(QMouseEvent *event) override;
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseDoubleClickEvent(QMouseEvent *event) override;
+	void contextMenuEvent(QContextMenuEvent *event) override;
 	bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:

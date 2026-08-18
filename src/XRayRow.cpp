@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayRow.hpp"
+#include "XRayList.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -28,6 +29,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QAction>
+#include <QContextMenuEvent>
+#include <QMenu>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
 
@@ -248,15 +253,83 @@ void XRayRow::paintEvent(QPaintEvent *event)
 	QFrame::paintEvent(event);
 }
 
-/* ---------------------------------------------------------------- rename */
+/* ------------------------------------------------------ properties menu */
 
+/*
+ * Matches SourceTreeItem::mouseDoubleClickEvent: a branch toggles, anything
+ * else opens Properties, and a source that has none is left alone. Rename is
+ * deliberately not bound here -- OBS puts it on the context menu, and binding
+ * it to double-click would take Properties away from exactly the rows people
+ * open it on most.
+ */
 void XRayRow::mouseDoubleClickEvent(QMouseEvent *event)
 {
-	if (event->button() == Qt::LeftButton && !editor)
-		enterEditMode();
-	else
+	if (event->button() != Qt::LeftButton || editor) {
 		QFrame::mouseDoubleClickEvent(event);
+		return;
+	}
+
+	if (expand) {
+		expand->setChecked(!expand->isChecked());
+		return;
+	}
+
+	xray::open_source_properties(sourceUuid);
 }
+
+void XRayRow::contextMenuEvent(QContextMenuEvent *event)
+{
+	if (editor) {
+		QFrame::contextMenuEvent(event);
+		return;
+	}
+
+	QMenu menu(this);
+
+	QAction *properties = menu.addAction(obs_module_text("Row.Properties"));
+	properties->setEnabled(xray::source_is_configurable(sourceUuid));
+	connect(properties, &QAction::triggered, this, [this] { xray::open_source_properties(sourceUuid); });
+
+	QAction *filters = menu.addAction(obs_module_text("Row.Filters"));
+	connect(filters, &QAction::triggered, this, [this] { xray::open_source_filters(sourceUuid); });
+
+	QAction *interact = menu.addAction(obs_module_text("Row.Interact"));
+	interact->setEnabled(xray::source_is_interactive(sourceUuid));
+	connect(interact, &QAction::triggered, this, [this] { xray::open_source_interaction(sourceUuid); });
+
+	menu.addSeparator();
+
+	QAction *rename = menu.addAction(obs_module_text("Row.Rename"));
+
+	/*
+	 * Queued. The action fires while exec() below is still unwinding, and
+	 * enterEditMode() rearranges this row's layout -- doing that underneath a
+	 * running menu is asking for trouble.
+	 */
+	connect(rename, &QAction::triggered, this, [this] {
+		QMetaObject::invokeMethod(
+			this, [this] { enterEditMode(); }, Qt::QueuedConnection);
+	});
+
+	/*
+	 * exec() spins a nested event loop, so scene signals keep arriving and a
+	 * rebuild would delete this row while its own handler is still on the
+	 * stack -- the same hazard QDrag::exec() has. Hold the dock off until the
+	 * menu closes.
+	 */
+	/* Rows are parented to the XRayList, so no back-pointer is needed. */
+	XRayList *owner = qobject_cast<XRayList *>(parentWidget());
+
+	if (owner)
+		owner->enterNestedLoop();
+
+	menu.exec(event->globalPos());
+
+	if (owner)
+		owner->exitNestedLoop();
+}
+
+/* ---------------------------------------------------------------- rename */
 
 void XRayRow::enterEditMode()
 {

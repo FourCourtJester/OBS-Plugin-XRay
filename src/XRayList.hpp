@@ -45,12 +45,20 @@ public:
 	void clearRows();
 
 	/*
-	 * True while QDrag::exec() is running. It spins a nested event loop, so
-	 * signals keep being delivered and a rebuild would delete these rows --
-	 * including the one whose mouseMoveEvent is still on the stack. The dock
-	 * defers refreshing until this clears.
+	 * True while a nested event loop is running over these rows -- a drag, or
+	 * a row's context menu. Both keep delivering signals, so a rebuild would
+	 * delete the rows underneath, including the one whose event handler is
+	 * still on the stack. The dock defers refreshing until this clears.
 	 */
-	bool isDragging() const { return dragged != nullptr; }
+	bool isBusy() const { return dragged != nullptr || menuDepth > 0; }
+
+	/* Raised for the lifetime of a row's context menu. */
+	void enterNestedLoop() { ++menuDepth; }
+	void exitNestedLoop()
+	{
+		if (menuDepth > 0)
+			--menuDepth;
+	}
 
 	const std::vector<XRayRow *> &rowWidgets() const { return rows; }
 
@@ -80,5 +88,6 @@ private:
 	std::vector<XRayRow *> rows;
 
 	XRayRow *dragged = nullptr;
+	int menuDepth = 0;
 	int indicatorY = -1;
 };

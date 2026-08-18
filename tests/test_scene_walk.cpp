@@ -39,6 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * Build with -DENABLE_TESTS=ON and run via ctest.
  */
 
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -291,6 +292,40 @@ void obs_source_set_name(obs_source_t *s, const char *name)
 {
 	if (s && name)
 		s->name = name;
+}
+
+/*
+ * The frontend dialogs cannot be opened here, so the stubs record what was
+ * asked for instead. That is enough to check the guards: a source with no
+ * properties, or no interaction, must not be passed on.
+ */
+static std::string g_opened;
+
+bool obs_source_configurable(const obs_source_t *s)
+{
+	/* Mirrors libobs: sources with no settings UI are not configurable. */
+	return s && s->id != "scene" && s->id != "group";
+}
+
+uint32_t obs_source_get_output_flags(const obs_source_t *s)
+{
+	/* OBS_SOURCE_INTERACTION is 1 << 5. */
+	return (s && s->id == "browser_source") ? (1u << 5) : 0u;
+}
+
+void obs_frontend_open_source_properties(obs_source_t *s)
+{
+	g_opened += "props:" + (s ? s->name : std::string("?")) + " ";
+}
+
+void obs_frontend_open_source_filters(obs_source_t *s)
+{
+	g_opened += "filters:" + (s ? s->name : std::string("?")) + " ";
+}
+
+void obs_frontend_open_source_interaction(obs_source_t *s)
+{
+	g_opened += "interact:" + (s ? s->name : std::string("?")) + " ";
 }
 
 } /* extern "C" */
@@ -775,6 +810,35 @@ int main()
 			flags += n.name + (n.selected ? "=on " : "=off ");
 		check("selection carried onto rows", flags, "Other=off Picked=on ");
 	}
+
+	/* 8x. Double-click and the context menu route through these. A source
+	 * with no properties must not be handed to the frontend, and neither
+	 * must one that does not support interaction -- OBS greys both out
+	 * rather than opening an empty dialog. */
+	reset();
+	g_opened.clear();
+	g_program = make("Program", "scene");
+	obs_source *host2 = make("Host", "scene");
+	add(host2, make("Cam", "dshow_input"));
+	add(host2, make("Web", "browser_source"));
+	add(g_program, host2);
+
+	xray::open_source_properties("uuid-Cam");    /* configurable -> opens */
+	xray::open_source_properties("uuid-Host");   /* a scene -> refused */
+	xray::open_source_properties("uuid-missing"); /* gone -> refused */
+	xray::open_source_interaction("uuid-Web");   /* interactive -> opens */
+	xray::open_source_interaction("uuid-Cam");   /* not interactive -> refused */
+	xray::open_source_filters("uuid-Cam");       /* always allowed */
+	check("frontend dialogs guarded by capability", g_opened, "props:Cam interact:Web filters:Cam ");
+
+	/* 8y. The menu greys entries out using the same answers. */
+	check("capability queries agree with the guards",
+	      std::string(xray::source_is_configurable("uuid-Cam") ? "1" : "0") +
+		      (xray::source_is_configurable("uuid-Host") ? "1" : "0") +
+		      (xray::source_is_interactive("uuid-Web") ? "1" : "0") +
+		      (xray::source_is_interactive("uuid-Cam") ? "1" : "0") +
+		      (xray::source_is_configurable("uuid-missing") ? "1" : "0"),
+	      "10100");
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

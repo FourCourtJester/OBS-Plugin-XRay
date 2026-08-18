@@ -369,4 +369,37 @@ bool rename_source(const std::string &source_uuid, const std::string &new_name)
 	return true;
 }
 
+void open_source_properties(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source && obs_source_configurable(source))
+		obs_frontend_open_source_properties(source);
+}
+
+void open_source_filters(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source)
+		obs_frontend_open_source_filters(source);
+}
+
+void open_source_interaction(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source && (obs_source_get_output_flags(source) & OBS_SOURCE_INTERACTION))
+		obs_frontend_open_source_interaction(source);
+}
+
+bool source_is_configurable(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	return source && obs_source_configurable(source);
+}
+
+bool source_is_interactive(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	return source && (obs_source_get_output_flags(source) & OBS_SOURCE_INTERACTION) != 0;
+}
+
 } // namespace xray

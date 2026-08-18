@@ -163,4 +163,21 @@ void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t be
  */
 bool rename_source(const std::string &source_uuid, const std::string &new_name);
 
+/*
+ * Opens OBS's own dialogs for the source behind a row. Each is a no-op if the
+ * source has gone since the row was drawn, which is the normal outcome of a
+ * click that races a deletion.
+ *
+ * These reach the real windows OBS uses from its Sources dock, so a nested
+ * source gets the same Properties, Filters and Interact it would get if it were
+ * top level -- which is the point of the dock.
+ */
+void open_source_properties(const std::string &source_uuid);
+void open_source_filters(const std::string &source_uuid);
+void open_source_interaction(const std::string &source_uuid);
+
+/* Whether the corresponding menu entry should be offered at all. */
+bool source_is_configurable(const std::string &source_uuid);
+bool source_is_interactive(const std::string &source_uuid);
+
 } // namespace xray
