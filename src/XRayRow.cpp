@@ -306,10 +306,8 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	 * enterEditMode() rearranges this row's layout -- doing that underneath a
 	 * running menu is asking for trouble.
 	 */
-	connect(rename, &QAction::triggered, this, [this] {
-		QMetaObject::invokeMethod(
-			this, [this] { enterEditMode(); }, Qt::QueuedConnection);
-	});
+	connect(rename, &QAction::triggered, this,
+		[this] { QMetaObject::invokeMethod(this, [this] { enterEditMode(); }, Qt::QueuedConnection); });
 
 	/*
 	 * exec() spins a nested event loop, so scene signals keep arriving and a

@@ -823,12 +823,12 @@ int main()
 	add(host2, make("Web", "browser_source"));
 	add(g_program, host2);
 
-	xray::open_source_properties("uuid-Cam");    /* configurable -> opens */
-	xray::open_source_properties("uuid-Host");   /* a scene -> refused */
+	xray::open_source_properties("uuid-Cam");     /* configurable -> opens */
+	xray::open_source_properties("uuid-Host");    /* a scene -> refused */
 	xray::open_source_properties("uuid-missing"); /* gone -> refused */
-	xray::open_source_interaction("uuid-Web");   /* interactive -> opens */
-	xray::open_source_interaction("uuid-Cam");   /* not interactive -> refused */
-	xray::open_source_filters("uuid-Cam");       /* always allowed */
+	xray::open_source_interaction("uuid-Web");    /* interactive -> opens */
+	xray::open_source_interaction("uuid-Cam");    /* not interactive -> refused */
+	xray::open_source_filters("uuid-Cam");        /* always allowed */
 	check("frontend dialogs guarded by capability", g_opened, "props:Cam interact:Web filters:Cam ");
 
 	/* 8y. The menu greys entries out using the same answers. */
