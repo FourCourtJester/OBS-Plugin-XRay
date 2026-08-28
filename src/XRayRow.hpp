@@ -74,6 +74,7 @@ private slots:
 private:
 	void enterEditMode();
 	void exitEditMode(bool save);
+	void confirmRemove();
 
 	std::string owner;
 	std::string sourceUuid;

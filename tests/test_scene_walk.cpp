@@ -67,6 +67,9 @@ struct obs_sceneitem {
 	/* Tri-state, matching obs_data: unset until something writes it. */
 	bool collapsedSet = false;
 	bool collapsed = false;
+	int scale = 0;
+	int blendMode = 0;
+	int blendMethod = 0;
 	long refs = 1;
 };
 
@@ -79,6 +82,48 @@ struct obs_scene {
  * reads and all set_item_collapsed writes. */
 struct obs_data {
 	obs_sceneitem *item = nullptr;
+};
+
+/*
+ * Mirrored from libobs with the real values, because this file deliberately
+ * does not include obs.h -- it defines the entry points SceneWalk links
+ * against. Checked against libobs/obs-source.h and libobs/obs.h.
+ */
+#define OBS_SOURCE_VIDEO (1 << 0)
+#define OBS_SOURCE_AUDIO (1 << 1)
+#define OBS_SOURCE_ASYNC (1 << 2)
+#define OBS_SOURCE_ASYNC_VIDEO (OBS_SOURCE_ASYNC | OBS_SOURCE_VIDEO)
+#define OBS_SOURCE_INTERACTION (1 << 5)
+
+enum obs_scale_type {
+	OBS_SCALE_DISABLE,
+	OBS_SCALE_POINT,
+	OBS_SCALE_BICUBIC,
+	OBS_SCALE_BILINEAR,
+	OBS_SCALE_LANCZOS,
+	OBS_SCALE_AREA,
+};
+
+enum obs_blending_method {
+	OBS_BLEND_METHOD_DEFAULT,
+	OBS_BLEND_METHOD_SRGB_OFF,
+};
+
+enum obs_blending_type {
+	OBS_BLEND_NORMAL,
+	OBS_BLEND_ADDITIVE,
+	OBS_BLEND_SUBTRACT,
+	OBS_BLEND_SCREEN,
+	OBS_BLEND_MULTIPLY,
+	OBS_BLEND_LIGHTEN,
+	OBS_BLEND_DARKEN,
+};
+
+enum obs_order_movement {
+	OBS_ORDER_MOVE_UP,
+	OBS_ORDER_MOVE_DOWN,
+	OBS_ORDER_MOVE_TOP,
+	OBS_ORDER_MOVE_BOTTOM,
 };
 
 typedef struct obs_scene obs_scene_t;
@@ -309,9 +354,109 @@ bool obs_source_configurable(const obs_source_t *s)
 
 uint32_t obs_source_get_output_flags(const obs_source_t *s)
 {
-	/* OBS_SOURCE_INTERACTION is 1 << 5. */
-	return (s && s->id == "browser_source") ? (1u << 5) : 0u;
+	if (!s)
+		return 0;
+	if (s->id == "browser_source")
+		return OBS_SOURCE_VIDEO | OBS_SOURCE_INTERACTION;
+	if (s->id == "wasapi_input")
+		return OBS_SOURCE_AUDIO;
+	if (s->id == "ffmpeg_source")
+		return OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO;
+	return OBS_SOURCE_VIDEO;
 }
+
+bool obs_sceneitem_is_group(obs_sceneitem_t *item)
+{
+	return item && item->source && item->source->id == "group";
+}
+
+enum obs_scale_type obs_sceneitem_get_scale_filter(obs_sceneitem_t *i)
+{
+	return static_cast<enum obs_scale_type>(i ? i->scale : 0);
+}
+
+void obs_sceneitem_set_scale_filter(obs_sceneitem_t *i, enum obs_scale_type f)
+{
+	if (i)
+		i->scale = static_cast<int>(f);
+}
+
+enum obs_blending_type obs_sceneitem_get_blending_mode(obs_sceneitem_t *i)
+{
+	return static_cast<enum obs_blending_type>(i ? i->blendMode : 0);
+}
+
+void obs_sceneitem_set_blending_mode(obs_sceneitem_t *i, enum obs_blending_type m)
+{
+	if (i)
+		i->blendMode = static_cast<int>(m);
+}
+
+enum obs_blending_method obs_sceneitem_get_blending_method(obs_sceneitem_t *i)
+{
+	return static_cast<enum obs_blending_method>(i ? i->blendMethod : 0);
+}
+
+void obs_sceneitem_set_blending_method(obs_sceneitem_t *i, enum obs_blending_method m)
+{
+	if (i)
+		i->blendMethod = static_cast<int>(m);
+}
+
+/*
+ * Mirrors obs_sceneitem_set_order. Index 0 of the vector is first_item, which
+ * is the BOTTOM of the displayed list, so MOVE_UP walks toward the end.
+ */
+void obs_sceneitem_set_order(obs_sceneitem_t *item, enum obs_order_movement movement)
+{
+	if (!item)
+		return;
+	obs_scene *scene = nullptr;
+	for (auto &sc : g_scenes)
+		for (obs_sceneitem *i : sc->items)
+			if (i == item)
+				scene = sc.get();
+	if (!scene)
+		return;
+
+	auto &v = scene->items;
+	auto at = std::find(v.begin(), v.end(), item);
+	const size_t idx = static_cast<size_t>(std::distance(v.begin(), at));
+	v.erase(at);
+
+	switch (movement) {
+	case OBS_ORDER_MOVE_UP:
+		v.insert(v.begin() + static_cast<long>(std::min(idx + 1, v.size())), item);
+		break;
+	case OBS_ORDER_MOVE_DOWN:
+		v.insert(v.begin() + static_cast<long>(idx > 0 ? idx - 1 : 0), item);
+		break;
+	case OBS_ORDER_MOVE_TOP:
+		v.push_back(item);
+		break;
+	case OBS_ORDER_MOVE_BOTTOM:
+		v.insert(v.begin(), item);
+		break;
+	}
+}
+
+void obs_sceneitem_remove(obs_sceneitem_t *item)
+{
+	if (!item)
+		return;
+	for (auto &sc : g_scenes) {
+		auto &v = sc->items;
+		auto at = std::find(v.begin(), v.end(), item);
+		if (at != v.end()) {
+			v.erase(at);
+			return;
+		}
+	}
+}
+
+void obs_frontend_take_source_screenshot(obs_source_t *) {}
+
+void obs_frontend_open_projector(const char *, int, const char *, const char *) {}
 
 void obs_frontend_open_source_properties(obs_source_t *s)
 {
@@ -839,6 +984,93 @@ int main()
 		      (xray::source_is_interactive("uuid-Cam") ? "1" : "0") +
 		      (xray::source_is_configurable("uuid-missing") ? "1" : "0"),
 	      "10100");
+
+	/* --- context menu operations --- */
+
+	/* 9e. Order moves are stated in display terms, and display is the
+	 * reverse of the scene's own order. OBS_ORDER_MOVE_UP attaches the item
+	 * after its successor in the scene list, which is one row higher on
+	 * screen -- getting this backwards makes Move Up move down. */
+	reset();
+	g_program = make("Program", "scene");
+	add(g_program, make("Bottom", "scene")); /* added first -> drawn last  */
+	add(g_program, make("Middle", "scene"));
+	add(g_program, make("Top", "scene")); /* added last  -> drawn first */
+	check("order baseline", run(), "S:Top\nS:Middle\nS:Bottom\n");
+
+	auto idOf = [&](const char *name) {
+		for (obs_sceneitem *i : g_program->scene->items)
+			if (i->source->name == name)
+				return i->id;
+		return int64_t{-1};
+	};
+
+	xray::set_order("uuid-Program", idOf("Middle"), xray::OrderMovement::Up);
+	check("move up goes up on screen", run(), "S:Middle\nS:Top\nS:Bottom\n");
+
+	xray::set_order("uuid-Program", idOf("Middle"), xray::OrderMovement::Bottom);
+	check("move to bottom goes to the bottom on screen", run(), "S:Top\nS:Bottom\nS:Middle\n");
+
+	xray::set_order("uuid-Program", idOf("Middle"), xray::OrderMovement::Top);
+	check("move to top goes to the top on screen", run(), "S:Middle\nS:Top\nS:Bottom\n");
+
+	xray::set_order("uuid-Program", idOf("Middle"), xray::OrderMovement::Down);
+	check("move down goes down on screen", run(), "S:Top\nS:Middle\nS:Bottom\n");
+
+	/* 9f. Capability flags decide which menu entries appear at all. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *capHost = make("Host", "scene");
+	obs_sceneitem *webItem = add(capHost, make("Web", "browser_source"));
+	obs_sceneitem *micItem = add(capHost, make("Mic", "wasapi_input"));
+	obs_sceneitem *vidItem = add(capHost, make("Clip", "ffmpeg_source"));
+	obs_sceneitem *grpItem = add(capHost, make("Grp", "group"));
+	add(g_program, capHost);
+	{
+		auto flags = [](const xray::ItemProperties &p) {
+			return std::string(p.found ? "f" : "-") + (p.has_video ? "v" : "-") +
+			       (p.has_audio ? "a" : "-") + (p.is_async_video ? "y" : "-") + (p.is_group ? "g" : "-");
+		};
+		check("capability flags per source kind",
+		      flags(xray::item_properties("uuid-Host", webItem->id)) + " " +
+			      flags(xray::item_properties("uuid-Host", micItem->id)) + " " +
+			      flags(xray::item_properties("uuid-Host", vidItem->id)) + " " +
+			      flags(xray::item_properties("uuid-Host", grpItem->id)),
+		      "fv--- f-a-- fvay- fv--g");
+	}
+
+	/* 9g. Rendering properties round-trip, and a vanished item reports
+	 * found=false rather than a plausible-looking set of defaults. */
+	xray::set_scale_filter("uuid-Host", webItem->id, xray::ScaleFilter::Lanczos);
+	xray::set_blending_mode("uuid-Host", webItem->id, xray::BlendingMode::Multiply);
+	xray::set_blending_method("uuid-Host", webItem->id, xray::BlendingMethod::SrgbOff);
+	{
+		const xray::ItemProperties p = xray::item_properties("uuid-Host", webItem->id);
+		const xray::ItemProperties gone = xray::item_properties("uuid-Host", 999999);
+		check("rendering properties round-trip",
+		      std::to_string(static_cast<int>(p.scale)) + "/" +
+			      std::to_string(static_cast<int>(p.blending_mode)) + "/" +
+			      std::to_string(static_cast<int>(p.blending_method)) + " " +
+			      (gone.found ? "found" : "missing"),
+		      "4/4/1 missing");
+	}
+
+	/* 9h. Remove takes the item out of its scene. */
+	xray::remove_item("uuid-Host", micItem->id);
+	check("remove drops the row", run(),
+	      "S:Host\n"
+	      "  G:Grp\n"
+	      "  -:Clip\n"
+	      "  -:Web\n");
+
+	/* 9i. Menu operations against a vanished owner or item are dropped. */
+	xray::set_scale_filter("uuid-gone", 1, xray::ScaleFilter::Point);
+	xray::set_blending_mode("uuid-gone", 1, xray::BlendingMode::Screen);
+	xray::set_order("uuid-gone", 1, xray::OrderMovement::Up);
+	xray::remove_item("uuid-Host", 999999);
+	xray::screenshot_source("uuid-gone");
+	xray::open_source_projector("uuid-gone", 0);
+	std::cout << "PASS  stale menu targets ignored\n";
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

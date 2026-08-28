@@ -402,4 +402,193 @@ bool source_is_interactive(const std::string &source_uuid)
 	return source && (obs_source_get_output_flags(source) & OBS_SOURCE_INTERACTION) != 0;
 }
 
+namespace {
+
+/*
+ * Explicit both ways rather than a cast. The libobs enumerators happen to line
+ * up with the mirrored ones today, but a reordering upstream would silently
+ * turn Bicubic into Bilinear and nothing would fail loudly.
+ */
+obs_scale_type to_obs(ScaleFilter f)
+{
+	switch (f) {
+	case ScaleFilter::Point:
+		return OBS_SCALE_POINT;
+	case ScaleFilter::Bicubic:
+		return OBS_SCALE_BICUBIC;
+	case ScaleFilter::Bilinear:
+		return OBS_SCALE_BILINEAR;
+	case ScaleFilter::Lanczos:
+		return OBS_SCALE_LANCZOS;
+	case ScaleFilter::Area:
+		return OBS_SCALE_AREA;
+	case ScaleFilter::Disable:
+		break;
+	}
+	return OBS_SCALE_DISABLE;
+}
+
+ScaleFilter from_obs(obs_scale_type f)
+{
+	switch (f) {
+	case OBS_SCALE_POINT:
+		return ScaleFilter::Point;
+	case OBS_SCALE_BICUBIC:
+		return ScaleFilter::Bicubic;
+	case OBS_SCALE_BILINEAR:
+		return ScaleFilter::Bilinear;
+	case OBS_SCALE_LANCZOS:
+		return ScaleFilter::Lanczos;
+	case OBS_SCALE_AREA:
+		return ScaleFilter::Area;
+	case OBS_SCALE_DISABLE:
+		break;
+	}
+	return ScaleFilter::Disable;
+}
+
+obs_blending_type to_obs(BlendingMode m)
+{
+	switch (m) {
+	case BlendingMode::Additive:
+		return OBS_BLEND_ADDITIVE;
+	case BlendingMode::Subtract:
+		return OBS_BLEND_SUBTRACT;
+	case BlendingMode::Screen:
+		return OBS_BLEND_SCREEN;
+	case BlendingMode::Multiply:
+		return OBS_BLEND_MULTIPLY;
+	case BlendingMode::Lighten:
+		return OBS_BLEND_LIGHTEN;
+	case BlendingMode::Darken:
+		return OBS_BLEND_DARKEN;
+	case BlendingMode::Normal:
+		break;
+	}
+	return OBS_BLEND_NORMAL;
+}
+
+BlendingMode from_obs(obs_blending_type m)
+{
+	switch (m) {
+	case OBS_BLEND_ADDITIVE:
+		return BlendingMode::Additive;
+	case OBS_BLEND_SUBTRACT:
+		return BlendingMode::Subtract;
+	case OBS_BLEND_SCREEN:
+		return BlendingMode::Screen;
+	case OBS_BLEND_MULTIPLY:
+		return BlendingMode::Multiply;
+	case OBS_BLEND_LIGHTEN:
+		return BlendingMode::Lighten;
+	case OBS_BLEND_DARKEN:
+		return BlendingMode::Darken;
+	case OBS_BLEND_NORMAL:
+		break;
+	}
+	return BlendingMode::Normal;
+}
+
+obs_blending_method to_obs(BlendingMethod m)
+{
+	return m == BlendingMethod::SrgbOff ? OBS_BLEND_METHOD_SRGB_OFF : OBS_BLEND_METHOD_DEFAULT;
+}
+
+BlendingMethod from_obs(obs_blending_method m)
+{
+	return m == OBS_BLEND_METHOD_SRGB_OFF ? BlendingMethod::SrgbOff : BlendingMethod::Default;
+}
+
+obs_order_movement to_obs(OrderMovement m)
+{
+	switch (m) {
+	case OrderMovement::Down:
+		return OBS_ORDER_MOVE_DOWN;
+	case OrderMovement::Top:
+		return OBS_ORDER_MOVE_TOP;
+	case OrderMovement::Bottom:
+		return OBS_ORDER_MOVE_BOTTOM;
+	case OrderMovement::Up:
+		break;
+	}
+	return OBS_ORDER_MOVE_UP;
+}
+
+} // namespace
+
+ItemProperties item_properties(const std::string &owner_uuid, int64_t item_id)
+{
+	ItemProperties props;
+
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return props;
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return props;
+
+	const uint32_t flags = obs_source_get_output_flags(source);
+
+	props.found = true;
+	props.has_video = (flags & OBS_SOURCE_VIDEO) != 0;
+	props.has_audio = (flags & OBS_SOURCE_AUDIO) != 0;
+	props.is_async_video = (flags & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO;
+	props.is_group = obs_sceneitem_is_group(item);
+
+	props.scale = from_obs(obs_sceneitem_get_scale_filter(item));
+	props.blending_mode = from_obs(obs_sceneitem_get_blending_mode(item));
+	props.blending_method = from_obs(obs_sceneitem_get_blending_method(item));
+
+	return props;
+}
+
+void set_scale_filter(const std::string &owner_uuid, int64_t item_id, ScaleFilter filter)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_scale_filter(item, to_obs(filter));
+}
+
+void set_blending_mode(const std::string &owner_uuid, int64_t item_id, BlendingMode mode)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_blending_mode(item, to_obs(mode));
+}
+
+void set_blending_method(const std::string &owner_uuid, int64_t item_id, BlendingMethod method)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_blending_method(item, to_obs(method));
+}
+
+void set_order(const std::string &owner_uuid, int64_t item_id, OrderMovement movement)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_order(item, to_obs(movement));
+}
+
+void remove_item(const std::string &owner_uuid, int64_t item_id)
+{
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_remove(item);
+}
+
+void screenshot_source(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source)
+		obs_frontend_take_source_screenshot(source);
+}
+
+void open_source_projector(const std::string &source_uuid, int monitor)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!source)
+		return;
+
+	/* A monitor of -1 is how OBS itself asks for a window rather than a
+	 * fullscreen projector; see OBSBasic::OpenSourceWindow. */
+	obs_frontend_open_projector("Source", monitor, nullptr, obs_source_get_name(source));
+}
+
 } // namespace xray

@@ -31,10 +31,19 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLineEdit>
 #include <QAction>
 #include <QContextMenuEvent>
+#include <QActionGroup>
+#include <QGuiApplication>
 #include <QMenu>
+#include <QMessageBox>
+#include <QScreen>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
+
+#include <functional>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -277,6 +286,35 @@ void XRayRow::mouseDoubleClickEvent(QMouseEvent *event)
 	xray::open_source_properties(sourceUuid);
 }
 
+namespace {
+
+/*
+ * A submenu of mutually exclusive settings, with the current one ticked.
+ *
+ * Every property menu OBS offers has this shape, so one helper keeps each of
+ * them down to its list of labels rather than a dozen near-identical blocks.
+ */
+template<typename Value>
+void addChoiceMenu(QMenu &parent, const QString &title, const std::vector<std::pair<QString, Value>> &choices,
+		   Value current, const std::function<void(Value)> &apply)
+{
+	QMenu *sub = parent.addMenu(title);
+	QActionGroup *group = new QActionGroup(sub);
+	group->setExclusive(true);
+
+	for (const auto &choice : choices) {
+		QAction *action = sub->addAction(choice.first);
+		action->setCheckable(true);
+		action->setChecked(choice.second == current);
+		group->addAction(action);
+
+		const Value value = choice.second;
+		QObject::connect(action, &QAction::triggered, sub, [apply, value] { apply(value); });
+	}
+}
+
+} // namespace
+
 void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 {
 	if (editor) {
@@ -285,6 +323,96 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	}
 
 	QMenu menu(this);
+
+	const xray::ItemProperties props = xray::item_properties(owner, item);
+	if (!props.found) {
+		/* The item went away between the row being drawn and the click,
+		 * so there is nothing for a menu to act on. */
+		QFrame::contextMenuEvent(event);
+		return;
+	}
+
+	/* --- projector and screenshot, video sources only --- */
+
+	if (props.has_video) {
+		QMenu *projector = menu.addMenu(obs_module_text("Row.Projector"));
+
+		const QList<QScreen *> screens = QGuiApplication::screens();
+		for (int i = 0; i < screens.size(); i++) {
+			const QRect geometry = screens[i]->geometry();
+			const QString label = QStringLiteral("%1: %2x%3 @ %4,%5")
+						      .arg(i + 1)
+						      .arg(geometry.width())
+						      .arg(geometry.height())
+						      .arg(geometry.x())
+						      .arg(geometry.y());
+
+			QAction *screen = projector->addAction(label);
+			const int monitor = i;
+			connect(screen, &QAction::triggered, this,
+				[this, monitor] { xray::open_source_projector(sourceUuid, monitor); });
+		}
+
+		projector->addSeparator();
+		QAction *window = projector->addAction(obs_module_text("Row.ProjectorWindow"));
+		connect(window, &QAction::triggered, this, [this] { xray::open_source_projector(sourceUuid, -1); });
+
+		QAction *screenshot = menu.addAction(obs_module_text("Row.Screenshot"));
+		connect(screenshot, &QAction::triggered, this, [this] { xray::screenshot_source(sourceUuid); });
+
+		menu.addSeparator();
+
+		/* --- how the item is rendered --- */
+
+		addChoiceMenu<xray::ScaleFilter>(menu, obs_module_text("Row.ScaleFiltering"),
+						 {{obs_module_text("Row.Scale.Disable"), xray::ScaleFilter::Disable},
+						  {obs_module_text("Row.Scale.Point"), xray::ScaleFilter::Point},
+						  {obs_module_text("Row.Scale.Bilinear"), xray::ScaleFilter::Bilinear},
+						  {obs_module_text("Row.Scale.Bicubic"), xray::ScaleFilter::Bicubic},
+						  {obs_module_text("Row.Scale.Lanczos"), xray::ScaleFilter::Lanczos},
+						  {obs_module_text("Row.Scale.Area"), xray::ScaleFilter::Area}},
+						 props.scale, [this](xray::ScaleFilter v) {
+							 xray::set_scale_filter(owner, item, v);
+						 });
+
+		addChoiceMenu<xray::BlendingMode>(
+			menu, obs_module_text("Row.BlendingMode"),
+			{{obs_module_text("Row.Blend.Normal"), xray::BlendingMode::Normal},
+			 {obs_module_text("Row.Blend.Additive"), xray::BlendingMode::Additive},
+			 {obs_module_text("Row.Blend.Subtract"), xray::BlendingMode::Subtract},
+			 {obs_module_text("Row.Blend.Screen"), xray::BlendingMode::Screen},
+			 {obs_module_text("Row.Blend.Multiply"), xray::BlendingMode::Multiply},
+			 {obs_module_text("Row.Blend.Lighten"), xray::BlendingMode::Lighten},
+			 {obs_module_text("Row.Blend.Darken"), xray::BlendingMode::Darken}},
+			props.blending_mode, [this](xray::BlendingMode v) { xray::set_blending_mode(owner, item, v); });
+
+		addChoiceMenu<xray::BlendingMethod>(
+			menu, obs_module_text("Row.BlendingMethod"),
+			{{obs_module_text("Row.Method.Default"), xray::BlendingMethod::Default},
+			 {obs_module_text("Row.Method.SrgbOff"), xray::BlendingMethod::SrgbOff}},
+			props.blending_method,
+			[this](xray::BlendingMethod v) { xray::set_blending_method(owner, item, v); });
+
+		menu.addSeparator();
+	}
+
+	/* --- order, which every kind of item has --- */
+
+	QMenu *order = menu.addMenu(obs_module_text("Row.Order"));
+	const std::vector<std::pair<const char *, xray::OrderMovement>> moves = {
+		{"Row.Order.Up", xray::OrderMovement::Up},
+		{"Row.Order.Down", xray::OrderMovement::Down},
+		{"Row.Order.Top", xray::OrderMovement::Top},
+		{"Row.Order.Bottom", xray::OrderMovement::Bottom},
+	};
+	for (const auto &move : moves) {
+		QAction *action = order->addAction(obs_module_text(move.first));
+		const xray::OrderMovement movement = move.second;
+		connect(action, &QAction::triggered, this,
+			[this, movement] { xray::set_order(owner, item, movement); });
+	}
+
+	menu.addSeparator();
 
 	QAction *properties = menu.addAction(obs_module_text("Row.Properties"));
 	properties->setEnabled(xray::source_is_configurable(sourceUuid));
@@ -298,6 +426,9 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	connect(interact, &QAction::triggered, this, [this] { xray::open_source_interaction(sourceUuid); });
 
 	menu.addSeparator();
+
+	QAction *remove = menu.addAction(obs_module_text("Row.Remove"));
+	connect(remove, &QAction::triggered, this, [this] { confirmRemove(); });
 
 	QAction *rename = menu.addAction(obs_module_text("Row.Rename"));
 
@@ -399,6 +530,34 @@ bool XRayRow::eventFilter(QObject *watched, QEvent *event)
 	}
 
 	return QFrame::eventFilter(watched, event);
+}
+
+void XRayRow::confirmRemove()
+{
+	/*
+	 * Queued for two reasons: the action fires while the menu's exec() is
+	 * still unwinding, and a confirmed removal destroys this row. Guarded
+	 * with a QPointer because a rebuild can beat the queued call to it.
+	 */
+	QPointer<XRayRow> self = this;
+
+	QMetaObject::invokeMethod(
+		this,
+		[self] {
+			if (!self)
+				return;
+
+			const QString question =
+				QString(obs_module_text("Row.Remove.Confirm")).arg(self->label->text());
+
+			if (QMessageBox::question(self, obs_module_text("Row.Remove"), question) != QMessageBox::Yes)
+				return;
+
+			/* Takes the item out of its scene. The source itself
+			 * survives if it is still used anywhere else. */
+			xray::remove_item(self->owner, self->item);
+		},
+		Qt::QueuedConnection);
 }
 
 /* ------------------------------------------------------------------ drag */

@@ -164,6 +164,62 @@ void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t be
 bool rename_source(const std::string &source_uuid, const std::string &new_name);
 
 /*
+ * Scene-item properties the context menu exposes.
+ *
+ * Mirrored rather than pulled in from obs.h so this header stays free of libobs
+ * -- which is what lets the test harness supply its own. Translation to the
+ * libobs enums is explicit in the .cpp, so a reordering upstream cannot
+ * silently turn one setting into another.
+ */
+enum class ScaleFilter { Disable, Point, Bicubic, Bilinear, Lanczos, Area };
+enum class BlendingMode { Normal, Additive, Subtract, Screen, Multiply, Lighten, Darken };
+enum class BlendingMethod { Default, SrgbOff };
+enum class OrderMovement { Up, Down, Top, Bottom };
+
+/*
+ * Everything the menu needs to decide what to show, gathered in one resolve so
+ * a right-click does not look the item up a dozen times.
+ *
+ * found is false when the item has gone since the row was drawn, in which case
+ * the menu offers nothing rather than acting on a stale target.
+ */
+struct ItemProperties {
+	bool found = false;
+
+	bool has_video = false;
+	bool has_audio = false;
+	bool is_async_video = false;
+	bool is_group = false;
+
+	ScaleFilter scale = ScaleFilter::Disable;
+	BlendingMode blending_mode = BlendingMode::Normal;
+	BlendingMethod blending_method = BlendingMethod::Default;
+};
+
+ItemProperties item_properties(const std::string &owner_uuid, int64_t item_id);
+
+void set_scale_filter(const std::string &owner_uuid, int64_t item_id, ScaleFilter filter);
+void set_blending_mode(const std::string &owner_uuid, int64_t item_id, BlendingMode mode);
+void set_blending_method(const std::string &owner_uuid, int64_t item_id, BlendingMethod method);
+
+/*
+ * Order movements are stated in display terms, and libobs already agrees:
+ * OBS_ORDER_MOVE_UP attaches the item after its successor in the scene list,
+ * which is one row higher on screen because display is the reverse of scene
+ * order. No inversion is needed here, unlike move_item_before above.
+ */
+void set_order(const std::string &owner_uuid, int64_t item_id, OrderMovement movement);
+
+/* Removes the item from its scene. The source survives if used elsewhere. */
+void remove_item(const std::string &owner_uuid, int64_t item_id);
+
+/* Saves a still of the source through OBS's own screenshot path. */
+void screenshot_source(const std::string &source_uuid);
+
+/* A monitor of -1 opens a projector window rather than a fullscreen projector. */
+void open_source_projector(const std::string &source_uuid, int monitor);
+
+/*
  * Opens OBS's own dialogs for the source behind a row. Each is a no-op if the
  * source has gone since the row was drawn, which is the normal outcome of a
  * click that races a deletion.
