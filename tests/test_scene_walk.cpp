@@ -1023,6 +1023,15 @@ static std::string run()
 	return out;
 }
 
+/* The same walk with pruning switched off, which is what the dock's "All"
+ * toggle turns on. */
+static std::string run_all()
+{
+	std::string out;
+	render(xray::walk_program_scene(true).tree, 0, out);
+	return out;
+}
+
 /* Watched uuids, sorted, with a "!" suffix marking containers. */
 static std::string watched()
 {
@@ -1893,6 +1902,70 @@ int main()
 	      std::string(xray::clipboard_has_item() ? "i" : "-") + (xray::clipboard_has_filters() ? "f" : "-") +
 		      (xray::clipboard_has_transition() ? "t" : "-"),
 	      "---");
+
+	/* 9v. Show-all turns the pruning off above a subscene, so the dock
+	 * mirrors the Sources dock and then keeps going down into it. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *sHost = make("Lower Third", "scene");
+	add(sHost, make("Name Text", "text"));
+	obs_source *sPlain = make("Plain Group", "group");
+	add(sPlain, make("Box", "color_source"));
+	add(g_program, make("Webcam", "input"));
+	add(g_program, sPlain);
+	add(g_program, sHost);
+	add(g_program, make("Mic", "wasapi_input"));
+
+	check("pruned view hides everything off the path to a subscene", run(),
+	      "S:Lower Third\n"
+	      "  -:Name Text\n");
+
+	check("show-all lists the whole scene, subscene included", run_all(),
+	      "-:Mic\n"
+	      "S:Lower Third\n"
+	      "  -:Name Text\n"
+	      "G:Plain Group\n"
+	      "  -:Box\n"
+	      "-:Webcam\n");
+
+	/* An empty group is a row in show-all and nothing when pruning -- the
+	 * exact case that reads as a missing feature. */
+	reset();
+	g_program = make("Program", "scene");
+	add(g_program, make("Empty Group", "group"));
+	check("empty group: hidden when pruning, shown by show-all", run() + "|" + run_all(), "|G:Empty Group\n");
+
+	/* Show-all changes what is listed, never how deep the walk goes: a
+	 * cycle is still cut at the ancestor, not followed. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *loop = make("Loop", "scene");
+	add(loop, loop);
+	add(loop, make("Leaf", "image"));
+	add(g_program, loop);
+	check("show-all still cuts a cycle", run_all(),
+	      "S:Loop\n"
+	      "  -:Leaf\n"
+	      "  S:Loop*\n");
+
+	/* Collapse-all has to be told which view it is sweeping, or it misses
+	 * the branches that only exist in one of them. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *cGroup = make("Grp", "group");
+	add(cGroup, make("Box", "color_source"));
+	add(g_program, cGroup);
+
+	xray::set_all_collapsed(false, false);
+	const bool untouched = !cGroup->scene->items.empty() &&
+			       g_program->scene->items.front()->priv.bools.count("xray_collapsed") == 0;
+
+	xray::set_all_collapsed(false, true);
+	const bool reached = g_program->scene->items.front()->priv.bools.count("xray_collapsed") > 0;
+
+	check("collapse-all follows the view it is given",
+	      std::string(untouched ? "skipped" : "touched") + "/" + (reached ? "reached" : "missed"),
+	      "skipped/reached");
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

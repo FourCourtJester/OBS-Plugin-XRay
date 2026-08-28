@@ -60,18 +60,32 @@ All of it follows the user's theme automatically, including themes that do not e
 
 ### What the dock shows
 
-Pruning is asymmetric. Above a subscene, only items on a path to one appear — an ordinary source at
-the top level of the program scene gets no row, since the stock Sources dock already lists it, and a
-group earns a row only if a subscene turned up beneath it. At and below a subscene, everything is
-listed, because seeing inside the subscene is the point.
+Two views, switched by the **All** toggle at the right of the dock's toolbar and remembered across
+restarts in the user config under `[XRay] ShowAllSources`.
+
+**Off (default) — pruned.** Pruning is asymmetric. Above a subscene, only items on a path to one
+appear: an ordinary source at the top level of the program scene gets no row, since the stock
+Sources dock already lists it, and a group earns a row only if a subscene turned up beneath it. At
+and below a subscene, everything is listed, because seeing inside the subscene is the point.
+
+**On — mirrored.** Nothing above a subscene is pruned either, so the dock shows everything the
+Sources dock shows and then carries on down into the nested scenes. The cost is a duplicate of a
+list you already have when the scene is flat, which is why it is not the only behaviour. The gain is
+that a group holding no nested scene stops silently vanishing — which reads as a missing feature
+rather than as deliberate pruning, and was the first thing a tester hit.
+
+Both views share one walk; the difference is a single flag (`list_all` in `walk_scene`) that starts
+true in the mirrored view and only becomes true on entering a subscene in the pruned one.
 
 A scene referenced twice is drawn twice; there is no deduplication. A scene that appears on its own
 ancestor path is marked `(recursive)` and not descended into.
 
 Selection follows OBS: picking a row in the stock Sources dock highlights the matching row here and
-scrolls it into view. Only rows that exist in both lists can respond — a plain source selected in
-the Sources dock is pruned out of this one, so nothing highlights. Scrolling happens only when the
-selection actually moves, never on an incidental rebuild. The reverse direction is not wired up:
+scrolls it into view. Only rows that exist in both lists can respond — in the pruned view a plain
+source selected in the Sources dock has no row here, so nothing highlights. Scrolling happens only when the
+selection actually moves, never on an incidental rebuild — turning **All** on removes that
+limitation, since every row the Sources dock has then exists here too. The reverse direction is not
+wired up:
 clicking a row here does not select it in OBS, since a nested selection cannot reach the preview.
 
 Rows can be dragged to reorder, but only among rows sharing their owning scene — rows at different

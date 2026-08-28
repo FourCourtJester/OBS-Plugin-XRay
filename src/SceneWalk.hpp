@@ -109,19 +109,26 @@ struct WalkResult {
 };
 
 /*
- * Walks the current program scene and returns its subscene branches.
+ * Walks the current program scene and returns its branches.
  *
- * Pruning is asymmetric, and deliberately so. Above a subscene only items on a
- * path to one survive: an ordinary source sitting at the top level of the
- * program scene does not get a row, because the stock Sources dock already
- * shows it, and a group earns a row only if a subscene turned up beneath it.
- * At and below a subscene everything is listed, because seeing inside the
- * subscene is the entire point of the dock.
+ * With show_all false the pruning is asymmetric, and deliberately so. Above a
+ * subscene only items on a path to one survive: an ordinary source sitting at
+ * the top level of the program scene does not get a row, because the stock
+ * Sources dock already shows it, and a group earns a row only if a subscene
+ * turned up beneath it. At and below a subscene everything is listed, because
+ * seeing inside the subscene is the entire point of the dock.
  *
- * The tree is empty when the program scene contains no scene sources; watches
- * never is, since the program scene itself is always watched.
+ * With show_all true nothing above a subscene is pruned either, so the dock
+ * mirrors the Sources dock and then carries on down into the nested scenes.
+ * That costs the operator a duplicate of a list they already have when the
+ * scene is flat, which is why it is a setting rather than the only behaviour --
+ * but it also means a group holding no subscene stops silently vanishing, which
+ * reads as a missing feature rather than as pruning.
+ *
+ * The tree is empty when the program scene has nothing to show; watches never
+ * is, since the program scene itself is always watched.
  */
-WalkResult walk_program_scene();
+WalkResult walk_program_scene(bool show_all = false);
 
 /*
  * Toggles for a single scene item, addressed by owning source and item id.
@@ -139,8 +146,12 @@ void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked
 
 void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed);
 
-/* Collapses or expands every branch under the program scene, in one pass. */
-void set_all_collapsed(bool collapsed);
+/*
+ * Collapses or expands every branch under the program scene, in one pass.
+ * show_all has to match what the dock is displaying, or the sweep would miss
+ * the branches that only exist in one of the two modes.
+ */
+void set_all_collapsed(bool collapsed, bool show_all = false);
 
 /*
  * Moves item_id so it is drawn immediately above before_item_id; a

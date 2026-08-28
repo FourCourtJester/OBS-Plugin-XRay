@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 class QLabel;
 class QScrollArea;
 class QTimer;
+class QToolButton;
 class XRayList;
 
 /*
@@ -79,6 +80,14 @@ private slots:
 	void collapseAll();
 	void expandAll();
 
+	/*
+	 * Switches between mirroring the Sources dock and showing only the
+	 * branches that lead to a nested scene. Persisted, because it is a
+	 * standing preference about what this panel is for rather than a
+	 * per-session view toggle.
+	 */
+	void setShowAll(bool showAll);
+
 private:
 	static void onContainerChanged(void *data, calldata_t *cd);
 	static void onSourceChanged(void *data, calldata_t *cd);
@@ -97,6 +106,9 @@ private:
 	XRayList *list = nullptr;
 	QLabel *placeholder = nullptr;
 	QTimer *refreshTimer = nullptr;
+	QToolButton *showAllButton = nullptr;
+
+	bool showAll = false;
 
 	/* Identifies the row last scrolled to, so a repeat is a no-op. */
 	std::string revealedOwner;

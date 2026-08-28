@@ -140,7 +140,7 @@ obs_scene_t *resolve_scene(const std::string &owner_uuid, OBSSourceAutoRelease &
 	return owner ? obs_group_or_scene_from_source(owner) : nullptr;
 }
 
-std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state);
+std::vector<Node> walk_scene(obs_scene_t *scene, bool list_all, int depth, State &state);
 
 Node build_subscene(obs_sceneitem_t *item, obs_source_t *owner, obs_source_t *source, obs_scene_t *subscene, int depth,
 		    State &state)
@@ -171,7 +171,16 @@ Node build_subscene(obs_sceneitem_t *item, obs_source_t *owner, obs_source_t *so
 	return node;
 }
 
-std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth, State &state)
+/*
+ * list_all means "everything at this level earns a row".
+ *
+ * It is always true at and below a subscene, because seeing inside one is the
+ * point of the dock. Above a subscene it follows the operator's show-all
+ * setting: off, only items on a path to a subscene survive, since the stock
+ * Sources dock already shows the rest; on, the dock mirrors that dock and then
+ * carries on down into the nested scenes.
+ */
+std::vector<Node> walk_scene(obs_scene_t *scene, bool list_all, int depth, State &state)
 {
 	std::vector<Node> nodes;
 
@@ -207,20 +216,20 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 			Node node;
 			node.kind = NodeKind::Group;
 			describe_item(node, item, owner, source);
-			node.children = walk_scene(group, inside_subscene, depth + 1, state);
+			node.children = walk_scene(group, list_all, depth + 1, state);
 
 			/*
-			 * Groups are walked through rather than around, but a
-			 * group above a subscene only earns a row if something
-			 * survived beneath it. Inside a subscene it always does.
+			 * Groups are walked through rather than around. When
+			 * pruning, a group only earns a row if something
+			 * survived beneath it; otherwise it always does.
 			 */
-			if (inside_subscene || !node.children.empty())
+			if (list_all || !node.children.empty())
 				nodes.push_back(std::move(node));
 
 		} else if (obs_scene_t *subscene = obs_scene_from_source(source)) {
 			nodes.push_back(build_subscene(item, owner, source, subscene, depth, state));
 
-		} else if (inside_subscene) {
+		} else if (list_all) {
 			Node node;
 			node.kind = NodeKind::Source;
 			describe_item(node, item, owner, source);
@@ -235,7 +244,7 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool inside_subscene, int depth
 
 } // namespace
 
-WalkResult walk_program_scene()
+WalkResult walk_program_scene(bool show_all)
 {
 	/* obs_frontend_get_current_scene() returns a new reference. */
 	OBSSourceAutoRelease program = obs_frontend_get_current_scene();
@@ -248,7 +257,7 @@ WalkResult walk_program_scene()
 	if (const char *uuid = obs_source_get_uuid(program))
 		state.ancestors.emplace_back(uuid);
 
-	state.result.tree = walk_scene(obs_scene_from_source(program), false, 0, state);
+	state.result.tree = walk_scene(obs_scene_from_source(program), show_all, 0, state);
 
 	return std::move(state.result);
 }
@@ -290,14 +299,14 @@ void collapse_branch(const std::vector<Node> &nodes, bool collapsed)
 
 } // namespace
 
-void set_all_collapsed(bool collapsed)
+void set_all_collapsed(bool collapsed, bool show_all)
 {
 	/*
 	 * Walked rather than enumerated, so this reaches exactly the branches
 	 * the dock draws -- including the ones currently hidden inside a
 	 * collapsed parent, since the walk never stops at a collapsed node.
 	 */
-	collapse_branch(walk_program_scene().tree, collapsed);
+	collapse_branch(walk_program_scene(show_all).tree, collapsed);
 }
 
 void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id)

@@ -21,6 +21,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "XRayRow.hpp"
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
+
+#include <util/config-file.h>
 
 #include <QFrame>
 #include <QHBoxLayout>
@@ -41,6 +44,39 @@ namespace {
 constexpr int COALESCE_MS = 50;
 
 constexpr int TOOLBAR_MARGIN_PX = 4;
+
+/*
+ * Where the show-all preference lives.
+ *
+ * User config rather than profile config: this is a standing choice about what
+ * the panel is for, not something that should change when the operator switches
+ * between a streaming and a recording profile.
+ */
+const char *const CONFIG_SECTION = "XRay";
+const char *const CONFIG_SHOW_ALL = "ShowAllSources";
+
+bool load_show_all()
+{
+	config_t *config = obs_frontend_get_user_config();
+	if (!config)
+		return false;
+
+	config_set_default_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL, false);
+	return config_get_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL);
+}
+
+void save_show_all(bool value)
+{
+	config_t *config = obs_frontend_get_user_config();
+	if (!config)
+		return;
+
+	config_set_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL, value);
+
+	/* OBS writes this file on exit, but a crash in between should not cost
+	 * the setting -- it is one line and the write is cheap. */
+	config_save_safe(config, "tmp", "bak");
+}
 
 /*
  * Structural signals on a scene or group source.
@@ -97,6 +133,15 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	expandButton->setToolTip(obs_module_text("Dock.ExpandAll"));
 	expandButton->setAutoRaise(true);
 
+	showAll = load_show_all();
+
+	showAllButton = new QToolButton(this);
+	showAllButton->setText(obs_module_text("Dock.ShowAll"));
+	showAllButton->setToolTip(obs_module_text("Dock.ShowAll.Tip"));
+	showAllButton->setAutoRaise(true);
+	showAllButton->setCheckable(true);
+	showAllButton->setChecked(showAll);
+
 	QWidget *toolbar = new QWidget(this);
 	toolbar->setObjectName("xrayToolbar");
 
@@ -106,6 +151,7 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	toolbarLayout->addWidget(collapseButton);
 	toolbarLayout->addWidget(expandButton);
 	toolbarLayout->addStretch(1);
+	toolbarLayout->addWidget(showAllButton);
 
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
@@ -115,6 +161,7 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 
 	connect(collapseButton, &QToolButton::clicked, this, &XRayDock::collapseAll);
 	connect(expandButton, &QToolButton::clicked, this, &XRayDock::expandAll);
+	connect(showAllButton, &QToolButton::toggled, this, &XRayDock::setShowAll);
 
 	refreshTimer = new QTimer(this);
 	refreshTimer->setSingleShot(true);
@@ -161,13 +208,23 @@ void XRayDock::onSourceChanged(void *data, calldata_t *)
 
 void XRayDock::collapseAll()
 {
-	xray::set_all_collapsed(true);
+	xray::set_all_collapsed(true, showAll);
 	refresh();
 }
 
 void XRayDock::expandAll()
 {
-	xray::set_all_collapsed(false);
+	xray::set_all_collapsed(false, showAll);
+	refresh();
+}
+
+void XRayDock::setShowAll(bool value)
+{
+	if (showAll == value)
+		return;
+
+	showAll = value;
+	save_show_all(value);
 	refresh();
 }
 
@@ -192,7 +249,7 @@ void XRayDock::refresh()
 	refreshTimer->stop();
 	clear();
 
-	const xray::WalkResult result = xray::walk_program_scene();
+	const xray::WalkResult result = xray::walk_program_scene(showAll);
 
 	/*
 	 * Watches are rewired even when nothing is rendered. The program scene is
@@ -201,8 +258,12 @@ void XRayDock::refresh()
 	 */
 	rewatch(result.watches);
 
-	if (result.tree.empty())
+	if (result.tree.empty()) {
+		/* Two different empties: nothing nested to show, versus a scene
+		 * with nothing in it at all. */
+		placeholder->setText(obs_module_text(showAll ? "Dock.Empty.All" : "Dock.Empty"));
 		return;
+	}
 
 	addRows(result.tree, 0);
 
