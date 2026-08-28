@@ -38,7 +38,7 @@
     },
     "name": "obs-xray",
     "displayName": "X-Ray",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "FourCourtJester",
     "website": "https://github.com/FourCourtJester/OBS-Plugin-XRay",
     "email": "shaun@mse.gg"
