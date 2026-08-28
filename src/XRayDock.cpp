@@ -136,6 +136,21 @@ XRayDock::XRayDock(xray::SceneTarget sceneTarget, QWidget *parent) : QWidget(par
 	placeholder->setWordWrap(true);
 	placeholder->setEnabled(false);
 
+	/*
+	 * The list and the empty message swap places, so both have to claim the
+	 * same room or the toolbar moves when the scene empties.
+	 *
+	 * A QLabel defaults to a Preferred vertical policy, which means it takes
+	 * its sizeHint and no more: one line of text. The rest of the dock --
+	 * whose height is fixed by the layout OBS restored, not by anything in
+	 * here -- was then left blank below it, and the toolbar rode up under
+	 * the message. Both are given Expanding so whichever is showing fills
+	 * the same space, and the toolbar is pinned Fixed so it never takes any
+	 * of it.
+	 */
+	placeholder->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+	scrollArea->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
 	QToolButton *collapseButton = new QToolButton(this);
 	collapseButton->setText(obs_module_text("Dock.CollapseAll"));
 	collapseButton->setToolTip(obs_module_text("Dock.CollapseAll"));
@@ -157,6 +172,7 @@ XRayDock::XRayDock(xray::SceneTarget sceneTarget, QWidget *parent) : QWidget(par
 
 	toolbar = new QWidget(this);
 	toolbar->setObjectName("xrayToolbar");
+	toolbar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
 	QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX);
