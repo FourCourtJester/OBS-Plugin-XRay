@@ -242,22 +242,39 @@ std::vector<Node> walk_scene(obs_scene_t *scene, bool list_all, int depth, State
 	return nodes;
 }
 
+/*
+ * Both entry points return a new reference, and both can return nothing:
+ * obs_frontend_get_current_preview_scene() is null whenever studio mode is off,
+ * which is what makes a preview dock empty rather than wrong.
+ */
+OBSSourceAutoRelease scene_for(SceneTarget target)
+{
+	if (target == SceneTarget::Preview)
+		return OBSSourceAutoRelease(obs_frontend_get_current_preview_scene());
+
+	return OBSSourceAutoRelease(obs_frontend_get_current_scene());
+}
+
 } // namespace
 
-WalkResult walk_program_scene(bool show_all)
+bool studio_mode_active()
 {
-	/* obs_frontend_get_current_scene() returns a new reference. */
-	OBSSourceAutoRelease program = obs_frontend_get_current_scene();
-	if (!program)
+	return obs_frontend_preview_program_mode_active();
+}
+
+WalkResult walk_scene_for(SceneTarget target, bool show_all)
+{
+	OBSSourceAutoRelease scene = scene_for(target);
+	if (!scene)
 		return {};
 
 	State state;
-	watch(state, program, true);
+	watch(state, scene, true);
 
-	if (const char *uuid = obs_source_get_uuid(program))
+	if (const char *uuid = obs_source_get_uuid(scene))
 		state.ancestors.emplace_back(uuid);
 
-	state.result.tree = walk_scene(obs_scene_from_source(program), show_all, 0, state);
+	state.result.tree = walk_scene(obs_scene_from_source(scene), show_all, 0, state);
 
 	return std::move(state.result);
 }
@@ -299,14 +316,14 @@ void collapse_branch(const std::vector<Node> &nodes, bool collapsed)
 
 } // namespace
 
-void set_all_collapsed(bool collapsed, bool show_all)
+void set_all_collapsed(bool collapsed, SceneTarget target, bool show_all)
 {
 	/*
 	 * Walked rather than enumerated, so this reaches exactly the branches
 	 * the dock draws -- including the ones currently hidden inside a
 	 * collapsed parent, since the walk never stops at a collapsed node.
 	 */
-	collapse_branch(walk_program_scene(show_all).tree, collapsed);
+	collapse_branch(walk_scene_for(target, show_all).tree, collapsed);
 }
 
 void move_item_before(const std::string &owner_uuid, int64_t item_id, int64_t before_item_id)

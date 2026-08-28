@@ -14,16 +14,17 @@ internally; scene sources just do not get the same treatment. XRay adds it.
 
 ## What it does
 
-Registers a dock named **Sources X-Ray**. When the program scene contains scene sources, the dock
-lists them recursively — each subscene's children indented one level beneath it, to arbitrary depth —
-with the standard visibility, lock, and reorder controls on every row.
+Registers two docks — **Sources X-Ray** and **Sources X-Ray (Preview)**. When the scene one of them
+follows contains scene sources, it lists them recursively — each subscene's children indented one
+level beneath it, to arbitrary depth — with the standard visibility, lock, and reorder controls on
+every row.
 
 Changes made in the dock apply to the underlying scene, and therefore show up everywhere that scene is
 used. That is the intended behaviour, not a side effect.
 
 ## Status
 
-Feature-complete for v1.0. The dock renders the nested contents of the program scene as a live
+Feature-complete for v1.1. Each dock renders the nested contents of its scene as a live
 indented list with visibility, lock, expand/collapse, inline rename and drag-to-reorder, using OBS's
 own source icons and themed controls throughout. Branches start collapsed, with collapse-all and
 expand-all in the dock's toolbar.
@@ -58,10 +59,40 @@ persists with the scene collection.
 
 All of it follows the user's theme automatically, including themes that do not exist yet.
 
-### What the dock shows
+### Two docks, not one panel
 
-Two views, switched by the **All** toggle at the left of the dock's toolbar and remembered across
-restarts in the user config under `[XRay] ShowAllSources`.
+**Sources X-Ray** follows program — `obs_frontend_get_current_scene()`, which is the scene on air in
+studio mode and simply the selected scene out of it. **Sources X-Ray (Preview)** follows
+`obs_frontend_get_current_preview_scene()`, which exists only while studio mode is on.
+
+Two registrations rather than one panel that switches, or one split down the middle, because it
+hands OBS the entire layout problem. Each dock gets its own Docks-menu entry, its own saved position,
+size, visibility and floating state, and can be tabbed or stacked with anything else. An operator who
+only wants program closes preview and never thinks about it again. Nothing here has to invent a
+splitter, persist its own geometry, or decide what to do when program and preview happen to be the
+same scene — which in studio mode they are most of the time.
+
+It also keeps each dock as simple as the single dock was. Two panes inside one widget would have
+meant merging and de-duplicating two sets of signal watches, and checking *both* lists for a running
+drag before any rebuild — the row-deleted-under-its-own-event-handler hazard, doubled. Separate docks
+share no state at all.
+
+Out of studio mode the preview dock has nothing to follow, so it shows one line — *Studio Mode is
+disabled.* — and hides its toolbar and list entirely. These two are likely to be docked beside or
+above each other, and the idle one should not be taking room from the one in use. The toolbar is
+hidden rather than greyed out: a disabled row of buttons still costs the height, and there is nothing
+for them to act on.
+
+`obs_frontend_add_dock_by_id` has no per-module limit; the only constraint is a unique id
+(`OBSBasic::IsDockObjectNameUsed`). The program dock keeps the id it has always had, so existing
+saved layouts survive — the preview dock is purely additive.
+
+### What each dock shows
+
+Two views, switched by the **All Sources** toggle at the left of each dock's toolbar and remembered across
+restarts in the user config: `[XRay] ShowAllSources` for the program dock, `ShowAllSourcesPreview`
+for the preview one. Kept separate on purpose — the full mirror on one and the focused view on the
+other is a reasonable way to work, and a shared setting would make each dock fight the other.
 
 **Off (default) — pruned.** Pruning is asymmetric. Above a subscene, only items on a path to one
 appear: an ordinary source at the top level of the program scene gets no row, since the stock
@@ -83,7 +114,7 @@ ancestor path is marked `(recursive)` and not descended into.
 Selection follows OBS: picking a row in the stock Sources dock highlights the matching row here and
 scrolls it into view. Only rows that exist in both lists can respond — in the pruned view a plain
 source selected in the Sources dock has no row here, so nothing highlights. Scrolling happens only when the
-selection actually moves, never on an incidental rebuild — turning **All** on removes that
+selection actually moves, never on an incidental rebuild — turning **All Sources** on removes that
 limitation, since every row the Sources dock has then exists here too. The reverse direction is not
 wired up:
 clicking a row here does not select it in OBS, since a nested selection cannot reach the preview.

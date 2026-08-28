@@ -53,25 +53,38 @@ constexpr int TOOLBAR_MARGIN_PX = 4;
  * between a streaming and a recording profile.
  */
 const char *const CONFIG_SECTION = "XRay";
-const char *const CONFIG_SHOW_ALL = "ShowAllSources";
 
-bool load_show_all()
+/*
+ * One key per dock. The two panels are used for different things -- the full
+ * mirror on one and the focused view on the other is a reasonable setup -- so
+ * sharing a single setting would make each dock fight the other.
+ *
+ * The program dock keeps the original key so anyone who already set this
+ * carries their choice forward.
+ */
+const char *config_show_all_key(xray::SceneTarget target)
+{
+	return target == xray::SceneTarget::Preview ? "ShowAllSourcesPreview" : "ShowAllSources";
+}
+
+bool load_show_all(xray::SceneTarget target)
 {
 	config_t *config = obs_frontend_get_user_config();
 	if (!config)
 		return false;
 
-	config_set_default_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL, false);
-	return config_get_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL);
+	const char *key = config_show_all_key(target);
+	config_set_default_bool(config, CONFIG_SECTION, key, false);
+	return config_get_bool(config, CONFIG_SECTION, key);
 }
 
-void save_show_all(bool value)
+void save_show_all(xray::SceneTarget target, bool value)
 {
 	config_t *config = obs_frontend_get_user_config();
 	if (!config)
 		return;
 
-	config_set_bool(config, CONFIG_SECTION, CONFIG_SHOW_ALL, value);
+	config_set_bool(config, CONFIG_SECTION, config_show_all_key(target), value);
 
 	/* OBS writes this file on exit, but a crash in between should not cost
 	 * the setting -- it is one line and the write is cheap. */
@@ -106,7 +119,7 @@ const char *const SOURCE_SIGNALS[] = {
 
 } // namespace
 
-XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
+XRayDock::XRayDock(xray::SceneTarget sceneTarget, QWidget *parent) : QWidget(parent), target(sceneTarget)
 {
 	setObjectName("xrayDock");
 	setMinimumWidth(150);
@@ -123,6 +136,21 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	placeholder->setWordWrap(true);
 	placeholder->setEnabled(false);
 
+	/*
+	 * The list and the empty message swap places, so both have to claim the
+	 * same room or the toolbar moves when the scene empties.
+	 *
+	 * A QLabel defaults to a Preferred vertical policy, which means it takes
+	 * its sizeHint and no more: one line of text. The rest of the dock --
+	 * whose height is fixed by the layout OBS restored, not by anything in
+	 * here -- was then left blank below it, and the toolbar rode up under
+	 * the message. Both are given Expanding so whichever is showing fills
+	 * the same space, and the toolbar is pinned Fixed so it never takes any
+	 * of it.
+	 */
+	placeholder->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+	scrollArea->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
 	QToolButton *collapseButton = new QToolButton(this);
 	collapseButton->setText(obs_module_text("Dock.CollapseAll"));
 	collapseButton->setToolTip(obs_module_text("Dock.CollapseAll"));
@@ -133,7 +161,7 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	expandButton->setToolTip(obs_module_text("Dock.ExpandAll"));
 	expandButton->setAutoRaise(true);
 
-	showAll = load_show_all();
+	showAll = load_show_all(target);
 
 	showAllButton = new QToolButton(this);
 	showAllButton->setText(obs_module_text("Dock.ShowAll"));
@@ -142,8 +170,9 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	showAllButton->setCheckable(true);
 	showAllButton->setChecked(showAll);
 
-	QWidget *toolbar = new QWidget(this);
+	toolbar = new QWidget(this);
 	toolbar->setObjectName("xrayToolbar");
+	toolbar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
 	QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX);
@@ -185,8 +214,33 @@ void XRayDock::clear()
 	watches.clear();
 	list->clearRows();
 
+	placeholder->setText(obs_module_text(showAll ? "Dock.Empty.All" : "Dock.Empty"));
 	placeholder->setVisible(true);
 	scrollArea->setVisible(false);
+	toolbar->setVisible(true);
+}
+
+/*
+ * Out of studio mode there is no preview scene at all, so a preview dock would
+ * otherwise sit there looking like it had failed. It says so in one line and
+ * hides the rest, because an operator is likely to have these two docked beside
+ * or above each other and the idle one should not be taking room from the one
+ * they are using.
+ *
+ * The toolbar goes rather than being greyed out: a disabled row of buttons
+ * still costs the height, and there is nothing here for them to act on.
+ */
+bool XRayDock::showStudioModeNotice()
+{
+	if (target != xray::SceneTarget::Preview || xray::studio_mode_active())
+		return false;
+
+	placeholder->setText(obs_module_text("Dock.StudioDisabled"));
+	placeholder->setVisible(true);
+	scrollArea->setVisible(false);
+	toolbar->setVisible(false);
+
+	return true;
 }
 
 void XRayDock::scheduleRefresh()
@@ -210,13 +264,13 @@ void XRayDock::onSourceChanged(void *data, calldata_t *)
 
 void XRayDock::collapseAll()
 {
-	xray::set_all_collapsed(true, showAll);
+	xray::set_all_collapsed(true, target, showAll);
 	refresh();
 }
 
 void XRayDock::expandAll()
 {
-	xray::set_all_collapsed(false, showAll);
+	xray::set_all_collapsed(false, target, showAll);
 	refresh();
 }
 
@@ -226,7 +280,7 @@ void XRayDock::setShowAll(bool value)
 		return;
 
 	showAll = value;
-	save_show_all(value);
+	save_show_all(target, value);
 	refresh();
 }
 
@@ -251,7 +305,10 @@ void XRayDock::refresh()
 	refreshTimer->stop();
 	clear();
 
-	const xray::WalkResult result = xray::walk_program_scene(showAll);
+	if (showStudioModeNotice())
+		return;
+
+	const xray::WalkResult result = xray::walk_scene_for(target, showAll);
 
 	/*
 	 * Watches are rewired even when nothing is rendered. The program scene is
@@ -260,12 +317,8 @@ void XRayDock::refresh()
 	 */
 	rewatch(result.watches);
 
-	if (result.tree.empty()) {
-		/* Two different empties: nothing nested to show, versus a scene
-		 * with nothing in it at all. */
-		placeholder->setText(obs_module_text(showAll ? "Dock.Empty.All" : "Dock.Empty"));
+	if (result.tree.empty())
 		return;
-	}
 
 	addRows(result.tree, 0);
 

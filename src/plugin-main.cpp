@@ -42,19 +42,29 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 static constexpr uint32_t MINIMUM_OBS_VERSION = MAKE_SEMANTIC_VERSION(30, 0, 0);
 
 /*
- * Deliberately still says "subscene" after the dock was renamed to Sources
- * X-Ray. This id is the key OBS saves dock position and visibility under, so
- * changing it would orphan everyone's saved layout and make the dock come up
- * hidden again -- the exact symptom the post-load registration above fixes.
- * The visible name lives in the locale file; this is not user-facing.
+ * Two docks, one per scene OBS has.
+ *
+ * Registering two panels rather than splitting one hands OBS the whole layout
+ * problem: each gets its own Docks menu entry, its own saved position, size and
+ * visibility, and can be tabbed or stacked with anything else. An operator who
+ * only wants program simply closes preview.
+ *
+ * The program id deliberately still says "subscene", from before the dock was
+ * renamed to Sources X-Ray. It is the key OBS saves dock position and
+ * visibility under, so changing it would orphan every existing layout -- and
+ * the program dock is the one that already exists, so it keeps its id and its
+ * behaviour. The preview dock is purely additive. Visible names live in the
+ * locale file; neither of these is user-facing.
  */
-static const char *DOCK_ID = "obs-xray-subscene-sources";
+static const char *PROGRAM_DOCK_ID = "obs-xray-subscene-sources";
+static const char *PREVIEW_DOCK_ID = "obs-xray-subscene-sources-preview";
 
-static bool dock_registered = false;
+static bool docks_registered = false;
 static bool callback_registered = false;
 
-/* Guarded rather than raw: OBS owns the widget and outlives our pointer to it. */
-static QPointer<XRayDock> dock_widget;
+/* Guarded rather than raw: OBS owns the widgets and outlives our pointers. */
+static QPointer<XRayDock> program_dock;
+static QPointer<XRayDock> preview_dock;
 
 /*
  * Puts the dock back in the layout after registration.
@@ -76,7 +86,7 @@ static QPointer<XRayDock> dock_widget;
  * does not. Lock UI is deliberately left alone: it is the operator's setting,
  * and it applies to every dock OBS has.
  */
-static void settle_dock(void)
+static void settle_dock(const char *id)
 {
 	QMainWindow *main = qobject_cast<QMainWindow *>(static_cast<QWidget *>(obs_frontend_get_main_window()));
 	if (!main)
@@ -84,46 +94,72 @@ static void settle_dock(void)
 
 	/* OBS wraps our widget in an OBSDock carrying the id as its object
 	 * name. Nothing hands that wrapper back, so it is looked up. */
-	QDockWidget *wrapper = main->findChild<QDockWidget *>(DOCK_ID);
+	QDockWidget *wrapper = main->findChild<QDockWidget *>(id);
 	if (!wrapper)
 		return;
 
 	wrapper->setFloating(false);
 }
 
-static void create_dock(void)
+static XRayDock *register_dock(const char *id, const char *title, xray::SceneTarget target)
 {
-	if (dock_registered)
-		return;
-
 	/*
 	 * OBS takes ownership: add_dock_by_id() wraps this in an OBSDock
 	 * parented to the main window. We never delete it ourselves.
 	 */
-	XRayDock *dock = new XRayDock();
+	XRayDock *dock = new XRayDock(target);
 
-	if (!obs_frontend_add_dock_by_id(DOCK_ID, obs_module_text("Dock.Title"), dock)) {
-		obs_log(LOG_ERROR, "failed to register dock '%s' (duplicate id?)", DOCK_ID);
+	if (!obs_frontend_add_dock_by_id(id, title, dock)) {
+		obs_log(LOG_ERROR, "failed to register dock '%s' (duplicate id?)", id);
 		delete dock;
-		return;
+		return nullptr;
 	}
 
-	dock_widget = dock;
-	dock_registered = true;
+	settle_dock(id);
+	obs_log(LOG_INFO, "dock registered as '%s'", id);
 
-	settle_dock();
-
-	obs_log(LOG_INFO, "dock registered as '%s'", DOCK_ID);
+	return dock;
 }
 
-static void destroy_dock(void)
+static void create_docks(void)
 {
-	if (!dock_registered)
+	if (docks_registered)
 		return;
 
-	obs_frontend_remove_dock(DOCK_ID);
-	dock_widget = nullptr;
-	dock_registered = false;
+	program_dock = register_dock(PROGRAM_DOCK_ID, obs_module_text("Dock.Title"), xray::SceneTarget::Program);
+	preview_dock =
+		register_dock(PREVIEW_DOCK_ID, obs_module_text("Dock.Title.Preview"), xray::SceneTarget::Preview);
+
+	docks_registered = program_dock || preview_dock;
+}
+
+static void destroy_docks(void)
+{
+	if (!docks_registered)
+		return;
+
+	obs_frontend_remove_dock(PROGRAM_DOCK_ID);
+	obs_frontend_remove_dock(PREVIEW_DOCK_ID);
+
+	program_dock = nullptr;
+	preview_dock = nullptr;
+	docks_registered = false;
+}
+
+static void refresh_docks(void)
+{
+	if (program_dock)
+		program_dock->refresh();
+	if (preview_dock)
+		preview_dock->refresh();
+}
+
+static void clear_docks(void)
+{
+	if (program_dock)
+		program_dock->clear();
+	if (preview_dock)
+		preview_dock->clear();
 }
 
 static void frontend_event(enum obs_frontend_event event, void *)
@@ -136,18 +172,31 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		 * loaded and a program scene is active, so there is something to
 		 * walk; at registration time there was not.
 		 */
-		if (dock_widget)
-			dock_widget->refresh();
+		refresh_docks();
 		break;
 
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		/* A program change: the cut itself, in studio mode. */
+		refresh_docks();
+		break;
+
+	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
 		/*
-		 * The dock is anchored to the program scene, so it rewrites
-		 * itself on every cut. Accepted for v1.0; a "pin to scene"
-		 * toggle is the cheap fix if it proves disruptive.
+		 * The only scene event the stock Sources dock listens for.
+		 * OBSBasic raises it whenever the selected scene changes, in
+		 * studio mode and out of it.
 		 */
-		if (dock_widget)
-			dock_widget->refresh();
+		refresh_docks();
+		break;
+
+	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
+	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
+		/*
+		 * The preview dock swaps between a tree and the "Studio Mode is
+		 * disabled" notice here. No scene event need accompany this --
+		 * what changed is whether a preview scene exists at all.
+		 */
+		refresh_docks();
 		break;
 
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
@@ -157,13 +206,11 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		 * raises disableSaving, which is what would otherwise suppress
 		 * frontend events.
 		 */
-		if (dock_widget)
-			dock_widget->clear();
+		clear_docks();
 		break;
 
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
-		if (dock_widget)
-			dock_widget->refresh();
+		refresh_docks();
 		break;
 
 	case OBS_FRONTEND_EVENT_EXIT:
@@ -175,7 +222,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		 * that logs an error. Dock layout state is saved before EXIT, so
 		 * removing here still persists the panel's position.
 		 */
-		destroy_dock();
+		destroy_docks();
 
 		/* Weak references to sources that obs_shutdown() is about to
 		 * free. Dropped here rather than left to static destruction,
@@ -228,7 +275,7 @@ void obs_module_post_load(void)
 	 * collection is loaded at this point -- so the contents wait for
 	 * FINISHED_LOADING.
 	 */
-	create_dock();
+	create_docks();
 }
 
 void obs_module_unload(void)
@@ -243,7 +290,7 @@ void obs_module_unload(void)
 		callback_registered = false;
 	}
 
-	destroy_dock();
+	destroy_docks();
 	xray::clear_clipboard();
 
 	obs_log(LOG_INFO, "plugin unloaded");
