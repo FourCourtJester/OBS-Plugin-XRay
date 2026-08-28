@@ -148,10 +148,12 @@ XRayDock::XRayDock(QWidget *parent) : QWidget(parent)
 	QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbar);
 	toolbarLayout->setContentsMargins(TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX, TOOLBAR_MARGIN_PX);
 	toolbarLayout->setSpacing(TOOLBAR_MARGIN_PX);
+	/* The view toggle sits opposite the two collapse buttons: it changes
+	 * what the list contains, they only change how much of it is unfolded. */
+	toolbarLayout->addWidget(showAllButton);
+	toolbarLayout->addStretch(1);
 	toolbarLayout->addWidget(collapseButton);
 	toolbarLayout->addWidget(expandButton);
-	toolbarLayout->addStretch(1);
-	toolbarLayout->addWidget(showAllButton);
 
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);

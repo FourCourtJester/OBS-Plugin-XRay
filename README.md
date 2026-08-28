@@ -60,7 +60,7 @@ All of it follows the user's theme automatically, including themes that do not e
 
 ### What the dock shows
 
-Two views, switched by the **All** toggle at the right of the dock's toolbar and remembered across
+Two views, switched by the **All** toggle at the left of the dock's toolbar and remembered across
 restarts in the user config under `[XRay] ShowAllSources`.
 
 **Off (default) — pruned.** Pruning is asymmetric. Above a subscene, only items on a path to one
