@@ -101,6 +101,83 @@ Note that OBS and the plugin share one Qt instance in-process, so a Qt ABI misma
 behaviour that cannot be detected at runtime — only prevented at build time. Expect per-OBS-major
 builds rather than one universal binary.
 
+## Installing
+
+Grab the build for your platform from a
+[release](https://github.com/FourCourtJester/OBS-Plugin-XRay/releases), or from the Artifacts of a
+[CI run](https://github.com/FourCourtJester/OBS-Plugin-XRay/actions) if you want a build of an
+unreleased branch. **Close OBS before copying anything in** — the module is loaded at startup and a
+running OBS holds the file open on Windows.
+
+### Windows
+
+The zip contains an `obs-xray` folder already in the right shape. Drop it whole into:
+
+```
+C:\ProgramData\obs-studio\plugins\
+```
+
+so that you end up with:
+
+```
+C:\ProgramData\obs-studio\plugins\obs-xray\bin\64bit\obs-xray.dll
+C:\ProgramData\obs-studio\plugins\obs-xray\data\locale\en-US.ini
+```
+
+Paste `%ProgramData%\obs-studio\plugins` into the Explorer address bar to get there; create the
+`plugins` folder if it is not already present. No admin rights are needed and OBS updates leave it
+alone.
+
+**It is not `%APPDATA%`.** That is worth stating plainly because a lot of community guides say it:
+`%APPDATA%\obs-studio\plugins` does not exist as a search path on Windows. OBS builds this path from
+`CSIDL_COMMON_APPDATA`, which is `C:\ProgramData` — see `AddExtraModulePaths()` in
+`frontend/widgets/OBSBasic.cpp`. `%APPDATA%` holds your *settings*, not your plugins.
+
+Two cases where that path is wrong:
+
+- **Portable mode.** `AddExtraModulePaths()` returns early before adding it, so a portable install
+  never scans `C:\ProgramData`. Use the install directory instead (below).
+- **Installing next to OBS itself.** That location works, but takes a *different* layout — the files
+  are split rather than kept in one folder, and it needs admin rights:
+
+  ```
+  C:\Program Files\obs-studio\obs-plugins\64bit\obs-xray.dll
+  C:\Program Files\obs-studio\data\obs-plugins\obs-xray\locale\en-US.ini
+  ```
+
+### macOS
+
+Copy the `obs-xray.plugin` bundle to:
+
+```
+~/Library/Application Support/obs-studio/plugins/
+```
+
+Builds are **not signed or notarized**, so Gatekeeper will refuse to load the bundle. Clear the
+quarantine flag after copying:
+
+```sh
+xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/obs-xray.plugin
+```
+
+### Linux
+
+The Ubuntu artifact is a `.deb`:
+
+```sh
+sudo apt install ./obs-xray-1.0.1-x86_64.deb
+```
+
+To install by hand instead, the per-user path is `~/.config/obs-studio/plugins/obs-xray/`, with the
+same `bin/64bit` and `data` layout Windows uses.
+
+### Checking it loaded
+
+Start OBS and look for **Docks → Sources X-Ray**. If it is missing, the OBS log (Help → Log Files →
+View Current Log) will say why — search for `obs-xray`. On a successful load it logs
+`dock registered as 'obs-xray-subscene-sources'`. A version that is too old logs `requires OBS
+30.0.0 or later` and stops there.
+
 ## Building
 
 | Platform | Toolchain |
