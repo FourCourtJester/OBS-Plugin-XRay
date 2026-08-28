@@ -109,7 +109,25 @@ struct WalkResult {
 };
 
 /*
- * Walks the current program scene and returns its branches.
+ * Which of OBS's two scenes a dock follows. Fixed for the life of a dock: the
+ * panel following program never becomes the one following preview.
+ *
+ * Program is obs_frontend_get_current_scene(), which is the scene on air in
+ * studio mode and simply the selected scene out of it -- so a program dock
+ * behaves identically whether or not studio mode is on.
+ *
+ * Preview is obs_frontend_get_current_preview_scene(), which exists only while
+ * studio mode is on. Out of studio mode a preview walk returns nothing, and the
+ * dock says why rather than looking broken.
+ */
+enum class SceneTarget { Program, Preview };
+
+/* Whether OBS is in studio mode, which is the only reason a preview walk comes
+ * back empty when the scene collection plainly is not. */
+bool studio_mode_active();
+
+/*
+ * Walks the chosen scene and returns its branches.
  *
  * With show_all false the pruning is asymmetric, and deliberately so. Above a
  * subscene only items on a path to one survive: an ordinary source sitting at
@@ -125,10 +143,11 @@ struct WalkResult {
  * but it also means a group holding no subscene stops silently vanishing, which
  * reads as a missing feature rather than as pruning.
  *
- * The tree is empty when the program scene has nothing to show; watches never
- * is, since the program scene itself is always watched.
+ * The tree is empty when the chosen scene has nothing to show, and the watches
+ * are empty too when there is no such scene at all -- which is the normal state
+ * of a preview walk out of studio mode, not a fault.
  */
-WalkResult walk_program_scene(bool show_all = false);
+WalkResult walk_scene_for(SceneTarget target, bool show_all = false);
 
 /*
  * Toggles for a single scene item, addressed by owning source and item id.
@@ -147,11 +166,11 @@ void set_item_locked(const std::string &owner_uuid, int64_t item_id, bool locked
 void set_item_collapsed(const std::string &owner_uuid, int64_t item_id, bool collapsed);
 
 /*
- * Collapses or expands every branch under the program scene, in one pass.
- * show_all has to match what the dock is displaying, or the sweep would miss
- * the branches that only exist in one of the two modes.
+ * Collapses or expands every branch under the chosen scene, in one pass. Both
+ * arguments have to match what that dock is displaying, or the sweep would miss
+ * the branches that only exist in the other view.
  */
-void set_all_collapsed(bool collapsed, bool show_all = false);
+void set_all_collapsed(bool collapsed, SceneTarget target, bool show_all = false);
 
 /*
  * Moves item_id so it is drawn immediately above before_item_id; a

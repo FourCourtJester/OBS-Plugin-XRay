@@ -43,7 +43,14 @@ class XRayDock : public QWidget {
 	Q_OBJECT
 
 public:
-	explicit XRayDock(QWidget *parent = nullptr);
+	/*
+	 * The target is fixed for the life of the dock. Two instances are
+	 * registered -- one following program, one following preview -- rather
+	 * than one panel switching between them: OBS then owns their visibility,
+	 * position and saved layout individually, and an operator who only wants
+	 * one simply closes the other.
+	 */
+	explicit XRayDock(xray::SceneTarget target, QWidget *parent = nullptr);
 
 	/*
 	 * Drops the watches explicitly. Left to the implicit destructor they
@@ -93,6 +100,13 @@ private:
 	static void onSourceChanged(void *data, calldata_t *cd);
 
 	void addRows(const std::vector<xray::Node> &nodes, int depth);
+
+	/*
+	 * A preview dock out of studio mode has nothing to say and no reason to
+	 * take up room, so it shows one line and hides everything else. Returns
+	 * true when it did, meaning the caller should not build rows.
+	 */
+	bool showStudioModeNotice();
 	void rewatch(const std::vector<xray::Watch> &watches);
 
 	/*
@@ -107,7 +121,9 @@ private:
 	QLabel *placeholder = nullptr;
 	QTimer *refreshTimer = nullptr;
 	QToolButton *showAllButton = nullptr;
+	QWidget *toolbar = nullptr;
 
+	const xray::SceneTarget target;
 	bool showAll = false;
 
 	/* Identifies the row last scrolled to, so a repeat is a no-op. */

@@ -195,7 +195,13 @@ typedef struct obs_weak_source obs_weak_source_t;
 
 /* ---- stub libobs ---- */
 
+/* What obs_frontend_get_current_scene() returns: the scene on air in studio
+ * mode, and simply the selected scene out of it. */
 static obs_source *g_program = nullptr;
+
+/* The preview scene, which libobs hands out only while studio mode is on. */
+static obs_source *g_preview = nullptr;
+static bool g_studio_mode = false;
 static long g_live_item_refs = 0;
 static std::vector<std::unique_ptr<obs_source>> g_sources;
 static std::vector<std::unique_ptr<obs_scene>> g_scenes;
@@ -348,6 +354,18 @@ void obs_source_release(obs_source_t *) {}
 obs_source_t *obs_frontend_get_current_scene(void)
 {
 	return g_program;
+}
+
+/* Mirrors libobs: out of studio mode there is no preview scene at all, which is
+ * what makes an empty preview walk correct rather than broken. */
+obs_source_t *obs_frontend_get_current_preview_scene(void)
+{
+	return g_studio_mode ? g_preview : nullptr;
+}
+
+bool obs_frontend_preview_program_mode_active(void)
+{
+	return g_studio_mode;
 }
 
 obs_data_t *obs_sceneitem_get_private_settings(obs_sceneitem_t *item)
@@ -1014,12 +1032,23 @@ static void reset()
 	g_scenes.clear();
 	g_sources.clear();
 	g_program = nullptr;
+	g_preview = nullptr;
+	g_studio_mode = false;
 }
 
 static std::string run()
 {
 	std::string out;
-	render(xray::walk_program_scene().tree, 0, out);
+	render(xray::walk_scene_for(xray::SceneTarget::Program).tree, 0, out);
+	return out;
+}
+
+/* The same walk against the other of OBS's two scenes, which is what the second
+ * dock renders. */
+static std::string run_preview()
+{
+	std::string out;
+	render(xray::walk_scene_for(xray::SceneTarget::Preview).tree, 0, out);
 	return out;
 }
 
@@ -1028,7 +1057,7 @@ static std::string run()
 static std::string run_all()
 {
 	std::string out;
-	render(xray::walk_program_scene(true).tree, 0, out);
+	render(xray::walk_scene_for(xray::SceneTarget::Program, true).tree, 0, out);
 	return out;
 }
 
@@ -1036,7 +1065,7 @@ static std::string run_all()
 static std::string watched()
 {
 	std::vector<std::string> names;
-	for (const xray::Watch &w : xray::walk_program_scene().watches)
+	for (const xray::Watch &w : xray::walk_scene_for(xray::SceneTarget::Program).watches)
 		names.push_back(w.uuid.substr(5) + (w.container ? "!" : ""));
 	std::sort(names.begin(), names.end());
 	std::string out;
@@ -1182,7 +1211,7 @@ int main()
 	obs_sceneitem *inGroup = add(g4, s4);
 	add(g_program, g4);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &groupNode = r.tree.at(0);
 		const xray::Node &sceneNode = groupNode.children.at(0);
 		check("item inside group owned by group",
@@ -1197,7 +1226,7 @@ int main()
 	obs_sceneitem *leaf = add(s5, make("Text", "text"));
 	add(g_program, s5);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &node = r.tree.at(0).children.at(0);
 		xray::set_item_visible(node.owner_uuid, node.item_id, false);
 		xray::set_item_locked(node.owner_uuid, node.item_id, true);
@@ -1207,7 +1236,7 @@ int main()
 
 	/* 8h. Toggle states are read back into the tree. */
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &node = r.tree.at(0).children.at(0);
 		check("toggle state reflected in tree",
 		      std::string(node.visible ? "v" : "-") + (node.locked ? "l" : "-"), "-l");
@@ -1228,7 +1257,7 @@ int main()
 	add(s6, make("Cam", "dshow_input"));
 	add(g_program, s6);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &scene = r.tree.at(0);
 		check("source ids carried for icon lookup", scene.source_id + "," + scene.children.at(0).source_id,
 		      "scene,dshow_input");
@@ -1332,7 +1361,7 @@ int main()
 	obs_sceneitem *ci = add(g_program, c1);
 	xray::set_item_collapsed("uuid-Program", ci->id, true);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		check("collapsed round-trips and subtree still walked",
 		      std::string(r.tree.at(0).collapsed ? "collapsed" : "open") + "/" +
 			      std::to_string(r.tree.at(0).children.size()),
@@ -1380,19 +1409,19 @@ int main()
 	add(t1, make("Leaf", "text"));
 	obs_sceneitem *ti = add(g_program, t1);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		check("branches start collapsed", r.tree.at(0).collapsed ? "collapsed" : "open", "collapsed");
 	}
 
 	/* 8u. An explicit choice sticks, in both directions. */
 	xray::set_item_collapsed("uuid-Program", ti->id, false);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		check("explicit expand sticks", r.tree.at(0).collapsed ? "collapsed" : "open", "open");
 	}
 	xray::set_item_collapsed("uuid-Program", ti->id, true);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		check("explicit collapse sticks", r.tree.at(0).collapsed ? "collapsed" : "open", "collapsed");
 	}
 
@@ -1407,17 +1436,17 @@ int main()
 	add(outer, nested);
 	add(g_program, outer);
 
-	xray::set_all_collapsed(false);
+	xray::set_all_collapsed(false, xray::SceneTarget::Program);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &o = r.tree.at(0);
 		check("expand all reaches nested branches",
 		      std::string(o.collapsed ? "c" : "o") + (o.children.at(0).collapsed ? "c" : "o"), "oo");
 	}
 
-	xray::set_all_collapsed(true);
+	xray::set_all_collapsed(true, xray::SceneTarget::Program);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		const xray::Node &o = r.tree.at(0);
 		check("collapse all reaches nested branches",
 		      std::string(o.collapsed ? "c" : "o") + (o.children.at(0).collapsed ? "c" : "o"), "cc");
@@ -1432,7 +1461,7 @@ int main()
 	add(g_program, make("Other", "scene"));
 	obs_sceneitem_select(si, true);
 	{
-		const xray::WalkResult r = xray::walk_program_scene();
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Program);
 		std::string flags;
 		for (const xray::Node &n : r.tree)
 			flags += n.name + (n.selected ? "=on " : "=off ");
@@ -1956,16 +1985,87 @@ int main()
 	add(cGroup, make("Box", "color_source"));
 	add(g_program, cGroup);
 
-	xray::set_all_collapsed(false, false);
+	xray::set_all_collapsed(false, xray::SceneTarget::Program, false);
 	const bool untouched = !cGroup->scene->items.empty() &&
 			       g_program->scene->items.front()->priv.bools.count("xray_collapsed") == 0;
 
-	xray::set_all_collapsed(false, true);
+	xray::set_all_collapsed(false, xray::SceneTarget::Program, true);
 	const bool reached = g_program->scene->items.front()->priv.bools.count("xray_collapsed") > 0;
 
 	check("collapse-all follows the view it is given",
 	      std::string(untouched ? "skipped" : "touched") + "/" + (reached ? "reached" : "missed"),
 	      "skipped/reached");
+
+	/* 9w. The two targets are independent, which is the whole basis for
+	 * shipping two docks rather than one that switches. */
+	reset();
+	g_program = make("On Air", "scene");
+	obs_source *airSub = make("Air Sub", "scene");
+	add(airSub, make("Air Text", "text"));
+	add(g_program, airSub);
+
+	g_preview = make("Staged", "scene");
+	obs_source *stagedSub = make("Staged Sub", "scene");
+	add(stagedSub, make("Staged Text", "text"));
+	add(g_preview, stagedSub);
+
+	/* Studio mode off: program is unaffected, and preview has nothing --
+	 * not because the scene is empty but because there is no preview at
+	 * all, which is what the dock's notice says. */
+	check("studio mode off: program walks, preview does not",
+	      run() + "|" + run_preview() + "|" + (xray::studio_mode_active() ? "on" : "off"),
+	      "S:Air Sub\n"
+	      "  -:Air Text\n"
+	      "||off");
+
+	/* A preview walk out of studio mode watches nothing either, so the
+	 * idle dock costs no signal handlers. */
+	{
+		const xray::WalkResult r = xray::walk_scene_for(xray::SceneTarget::Preview);
+		check("no preview means no watches", std::to_string(r.watches.size()), "0");
+	}
+
+	g_studio_mode = true;
+	check("studio mode on: each target walks its own scene", run() + "|" + run_preview(),
+	      "S:Air Sub\n"
+	      "  -:Air Text\n"
+	      "|S:Staged Sub\n"
+	      "  -:Staged Text\n");
+
+	/* Cutting the staged scene to air moves program only. Two docks means
+	 * the operator sees both, rather than one view swapping under them. */
+	g_program = g_preview;
+	check("after a cut both targets agree", run() + "|" + run_preview(),
+	      "S:Staged Sub\n"
+	      "  -:Staged Text\n"
+	      "|S:Staged Sub\n"
+	      "  -:Staged Text\n");
+
+	/* Each target watches only its own scene. */
+	g_program = obs_get_source_by_name("On Air");
+	{
+		std::vector<std::string> names;
+		for (const xray::Watch &w : xray::walk_scene_for(xray::SceneTarget::Preview).watches)
+			names.push_back(w.uuid.substr(5));
+		std::sort(names.begin(), names.end());
+
+		std::string out;
+		for (const std::string &n : names)
+			out += n + " ";
+		check("a preview walk watches only the preview side", out, "Staged Staged Sub Staged Text ");
+	}
+
+	/* Collapse-all is per target, or one dock's sweep would reach into the
+	 * other's branches. */
+	xray::set_all_collapsed(false, xray::SceneTarget::Preview);
+	{
+		obs_sceneitem *airItem = g_program->scene->items.front();
+		obs_sceneitem *stagedItem = g_preview->scene->items.front();
+		check("collapse-all stays on its own target",
+		      std::string(airItem->priv.bools.count("xray_collapsed") ? "touched" : "untouched") + "/" +
+			      (stagedItem->priv.bools.count("xray_collapsed") ? "touched" : "untouched"),
+		      "untouched/touched");
+	}
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();
