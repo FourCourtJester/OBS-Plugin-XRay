@@ -210,6 +210,47 @@ void set_blending_method(const std::string &owner_uuid, int64_t item_id, Blendin
  */
 void set_order(const std::string &owner_uuid, int64_t item_id, OrderMovement movement);
 
+/*
+ * Deinterlacing lives on the source, not the scene item, so it is addressed by
+ * source uuid and applies everywhere that source appears. OBS offers it only
+ * for async video.
+ */
+enum class DeinterlaceMode { Disable, Discard, Retro, Blend, Blend2x, Linear, Linear2x, Yadif, Yadif2x };
+enum class FieldOrder { Top, Bottom };
+
+DeinterlaceMode deinterlace_mode(const std::string &source_uuid);
+FieldOrder deinterlace_field_order(const std::string &source_uuid);
+void set_deinterlace_mode(const std::string &source_uuid, DeinterlaceMode mode);
+void set_deinterlace_field_order(const std::string &source_uuid, FieldOrder order);
+
+/*
+ * The transform operations OBS offers from the Transform submenu, minus the
+ * Edit Transform dialog, which is an OBSBasic window with no frontend API.
+ *
+ * Implemented in SceneTransform.cpp rather than here: they need libobs's
+ * graphics maths, and the test harness would have to stand that up too --
+ * at which point the tests would be checking the stubbed matrix code rather
+ * than anything of ours. The maths is a faithful port of OBSBasic's.
+ */
+enum class TransformOp {
+	Reset,
+	Rotate90CW,
+	Rotate90CCW,
+	Rotate180,
+	FlipHorizontal,
+	FlipVertical,
+	FitToScreen,
+	StretchToScreen,
+	CenterToScreen,
+	CenterVertically,
+	CenterHorizontally,
+};
+
+void apply_transform(const std::string &owner_uuid, int64_t item_id, TransformOp op);
+
+/* Dissolves a group, leaving its children in the parent scene. */
+void ungroup_item(const std::string &owner_uuid, int64_t item_id);
+
 /* Removes the item from its scene. The source survives if used elsewhere. */
 void remove_item(const std::string &owner_uuid, int64_t item_id);
 

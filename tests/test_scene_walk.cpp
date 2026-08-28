@@ -56,6 +56,8 @@ struct obs_source {
 	std::string uuid;
 	std::string id; /* "scene", "group", or anything else */
 	obs_scene *scene = nullptr;
+	int deinterlace = 0;
+	int fieldOrder = 0;
 };
 
 struct obs_sceneitem {
@@ -117,6 +119,23 @@ enum obs_blending_type {
 	OBS_BLEND_MULTIPLY,
 	OBS_BLEND_LIGHTEN,
 	OBS_BLEND_DARKEN,
+};
+
+enum obs_deinterlace_mode {
+	OBS_DEINTERLACE_MODE_DISABLE,
+	OBS_DEINTERLACE_MODE_DISCARD,
+	OBS_DEINTERLACE_MODE_RETRO,
+	OBS_DEINTERLACE_MODE_BLEND,
+	OBS_DEINTERLACE_MODE_BLEND_2X,
+	OBS_DEINTERLACE_MODE_LINEAR,
+	OBS_DEINTERLACE_MODE_LINEAR_2X,
+	OBS_DEINTERLACE_MODE_YADIF,
+	OBS_DEINTERLACE_MODE_YADIF_2X,
+};
+
+enum obs_deinterlace_field_order {
+	OBS_DEINTERLACE_FIELD_ORDER_TOP,
+	OBS_DEINTERLACE_FIELD_ORDER_BOTTOM,
 };
 
 enum obs_order_movement {
@@ -455,6 +474,54 @@ void obs_sceneitem_remove(obs_sceneitem_t *item)
 }
 
 void obs_frontend_take_source_screenshot(obs_source_t *) {}
+
+enum obs_deinterlace_mode obs_source_get_deinterlace_mode(const obs_source_t *s)
+{
+	return static_cast<enum obs_deinterlace_mode>(s ? s->deinterlace : 0);
+}
+
+void obs_source_set_deinterlace_mode(obs_source_t *s, enum obs_deinterlace_mode m)
+{
+	if (s)
+		s->deinterlace = static_cast<int>(m);
+}
+
+enum obs_deinterlace_field_order obs_source_get_deinterlace_field_order(const obs_source_t *s)
+{
+	return static_cast<enum obs_deinterlace_field_order>(s ? s->fieldOrder : 0);
+}
+
+void obs_source_set_deinterlace_field_order(obs_source_t *s, enum obs_deinterlace_field_order o)
+{
+	if (s)
+		s->fieldOrder = static_cast<int>(o);
+}
+
+/* Mirrors libobs: the group's children move into the parent scene in place. */
+void obs_sceneitem_group_ungroup(obs_sceneitem_t *group)
+{
+	if (!group || !group->source || group->source->id != "group")
+		return;
+
+	obs_scene *parent = nullptr;
+	size_t at = 0;
+	for (auto &sc : g_scenes) {
+		for (size_t i = 0; i < sc->items.size(); i++) {
+			if (sc->items[i] == group) {
+				parent = sc.get();
+				at = i;
+			}
+		}
+	}
+	if (!parent)
+		return;
+
+	std::vector<obs_sceneitem *> children = group->source->scene->items;
+	group->source->scene->items.clear();
+
+	parent->items.erase(parent->items.begin() + static_cast<long>(at));
+	parent->items.insert(parent->items.begin() + static_cast<long>(at), children.begin(), children.end());
+}
 
 void obs_frontend_open_projector(const char *, int, const char *, const char *) {}
 
@@ -1071,6 +1138,72 @@ int main()
 	xray::screenshot_source("uuid-gone");
 	xray::open_source_projector("uuid-gone", 0);
 	std::cout << "PASS  stale menu targets ignored\n";
+
+	/* 9j. Deinterlacing lives on the source, so it applies wherever that
+	 * source appears rather than to one scene item. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *dHost = make("Host", "scene");
+	add(dHost, make("Clip", "ffmpeg_source"));
+	add(g_program, dHost);
+	xray::set_deinterlace_mode("uuid-Clip", xray::DeinterlaceMode::Yadif2x);
+	xray::set_deinterlace_field_order("uuid-Clip", xray::FieldOrder::Bottom);
+	check("deinterlace round-trips",
+	      std::to_string(static_cast<int>(xray::deinterlace_mode("uuid-Clip"))) + "/" +
+		      std::to_string(static_cast<int>(xray::deinterlace_field_order("uuid-Clip"))),
+	      "8/1");
+
+	/* A source that was never touched reports the disabled default, and a
+	 * vanished one does not invent something else. */
+	check("deinterlace defaults and misses",
+	      std::to_string(static_cast<int>(xray::deinterlace_mode("uuid-Host"))) +
+		      std::to_string(static_cast<int>(xray::deinterlace_mode("uuid-gone"))),
+	      "00");
+
+	/* 9k. Ungroup dissolves a group in place, leaving its children where
+	 * the group was. Anything that is not a group is left alone. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *uHost = make("Host", "scene");
+	obs_source *uGroup = make("Grp", "group");
+	add(uGroup, make("A", "scene"));
+	add(uGroup, make("B", "scene"));
+	add(uHost, make("Before", "scene"));
+	obs_sceneitem *groupItem = add(uHost, uGroup);
+	add(uHost, make("After", "scene"));
+	add(g_program, uHost);
+	check("group baseline", run(),
+	      "S:Host\n"
+	      "  S:After\n"
+	      "  G:Grp\n"
+	      "    S:B\n"
+	      "    S:A\n"
+	      "  S:Before\n");
+
+	xray::ungroup_item("uuid-Host", groupItem->id);
+	check("ungroup dissolves in place", run(),
+	      "S:Host\n"
+	      "  S:After\n"
+	      "  S:B\n"
+	      "  S:A\n"
+	      "  S:Before\n");
+
+	/* Not a group, and a missing item: both no-ops rather than damage. */
+	{
+		int64_t beforeId = -1;
+		for (obs_sceneitem *i : uHost->scene->items)
+			if (i->source->name == "Before")
+				beforeId = i->id;
+		xray::ungroup_item("uuid-Host", beforeId);
+		xray::ungroup_item("uuid-Host", 999999);
+		xray::ungroup_item("uuid-gone", 1);
+	}
+	check("ungroup ignores non-groups and misses", run(),
+	      "S:Host\n"
+	      "  S:After\n"
+	      "  S:B\n"
+	      "  S:A\n"
+	      "  S:Before\n");
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

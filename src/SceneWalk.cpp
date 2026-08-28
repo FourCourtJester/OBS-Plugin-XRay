@@ -591,4 +591,99 @@ void open_source_projector(const std::string &source_uuid, int monitor)
 	obs_frontend_open_projector("Source", monitor, nullptr, obs_source_get_name(source));
 }
 
+namespace {
+
+obs_deinterlace_mode to_obs(DeinterlaceMode m)
+{
+	switch (m) {
+	case DeinterlaceMode::Discard:
+		return OBS_DEINTERLACE_MODE_DISCARD;
+	case DeinterlaceMode::Retro:
+		return OBS_DEINTERLACE_MODE_RETRO;
+	case DeinterlaceMode::Blend:
+		return OBS_DEINTERLACE_MODE_BLEND;
+	case DeinterlaceMode::Blend2x:
+		return OBS_DEINTERLACE_MODE_BLEND_2X;
+	case DeinterlaceMode::Linear:
+		return OBS_DEINTERLACE_MODE_LINEAR;
+	case DeinterlaceMode::Linear2x:
+		return OBS_DEINTERLACE_MODE_LINEAR_2X;
+	case DeinterlaceMode::Yadif:
+		return OBS_DEINTERLACE_MODE_YADIF;
+	case DeinterlaceMode::Yadif2x:
+		return OBS_DEINTERLACE_MODE_YADIF_2X;
+	case DeinterlaceMode::Disable:
+		break;
+	}
+	return OBS_DEINTERLACE_MODE_DISABLE;
+}
+
+DeinterlaceMode from_obs(obs_deinterlace_mode m)
+{
+	switch (m) {
+	case OBS_DEINTERLACE_MODE_DISCARD:
+		return DeinterlaceMode::Discard;
+	case OBS_DEINTERLACE_MODE_RETRO:
+		return DeinterlaceMode::Retro;
+	case OBS_DEINTERLACE_MODE_BLEND:
+		return DeinterlaceMode::Blend;
+	case OBS_DEINTERLACE_MODE_BLEND_2X:
+		return DeinterlaceMode::Blend2x;
+	case OBS_DEINTERLACE_MODE_LINEAR:
+		return DeinterlaceMode::Linear;
+	case OBS_DEINTERLACE_MODE_LINEAR_2X:
+		return DeinterlaceMode::Linear2x;
+	case OBS_DEINTERLACE_MODE_YADIF:
+		return DeinterlaceMode::Yadif;
+	case OBS_DEINTERLACE_MODE_YADIF_2X:
+		return DeinterlaceMode::Yadif2x;
+	case OBS_DEINTERLACE_MODE_DISABLE:
+		break;
+	}
+	return DeinterlaceMode::Disable;
+}
+
+} // namespace
+
+DeinterlaceMode deinterlace_mode(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	return source ? from_obs(obs_source_get_deinterlace_mode(source)) : DeinterlaceMode::Disable;
+}
+
+FieldOrder deinterlace_field_order(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!source)
+		return FieldOrder::Top;
+
+	return obs_source_get_deinterlace_field_order(source) == OBS_DEINTERLACE_FIELD_ORDER_BOTTOM ? FieldOrder::Bottom
+												    : FieldOrder::Top;
+}
+
+void set_deinterlace_mode(const std::string &source_uuid, DeinterlaceMode mode)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source)
+		obs_source_set_deinterlace_mode(source, to_obs(mode));
+}
+
+void set_deinterlace_field_order(const std::string &source_uuid, FieldOrder order)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source)
+		obs_source_set_deinterlace_field_order(source, order == FieldOrder::Bottom
+								       ? OBS_DEINTERLACE_FIELD_ORDER_BOTTOM
+								       : OBS_DEINTERLACE_FIELD_ORDER_TOP);
+}
+
+void ungroup_item(const std::string &owner_uuid, int64_t item_id)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+
+	/* Only a group can be dissolved; anything else is left alone. */
+	if (item && obs_sceneitem_is_group(item))
+		obs_sceneitem_group_ungroup(item);
+}
+
 } // namespace xray

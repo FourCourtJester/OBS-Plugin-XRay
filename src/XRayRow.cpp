@@ -396,6 +396,68 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 		menu.addSeparator();
 	}
 
+	/* --- deinterlacing, async video only, matching OBS --- */
+
+	if (props.is_async_video) {
+		addChoiceMenu<xray::DeinterlaceMode>(
+			menu, obs_module_text("Row.Deinterlacing"),
+			{{obs_module_text("Row.Deint.Disable"), xray::DeinterlaceMode::Disable},
+			 {obs_module_text("Row.Deint.Discard"), xray::DeinterlaceMode::Discard},
+			 {obs_module_text("Row.Deint.Retro"), xray::DeinterlaceMode::Retro},
+			 {obs_module_text("Row.Deint.Blend"), xray::DeinterlaceMode::Blend},
+			 {obs_module_text("Row.Deint.Blend2x"), xray::DeinterlaceMode::Blend2x},
+			 {obs_module_text("Row.Deint.Linear"), xray::DeinterlaceMode::Linear},
+			 {obs_module_text("Row.Deint.Linear2x"), xray::DeinterlaceMode::Linear2x},
+			 {obs_module_text("Row.Deint.Yadif"), xray::DeinterlaceMode::Yadif},
+			 {obs_module_text("Row.Deint.Yadif2x"), xray::DeinterlaceMode::Yadif2x}},
+			xray::deinterlace_mode(sourceUuid),
+			[this](xray::DeinterlaceMode v) { xray::set_deinterlace_mode(sourceUuid, v); });
+
+		addChoiceMenu<xray::FieldOrder>(menu, obs_module_text("Row.FieldOrder"),
+						{{obs_module_text("Row.Field.Top"), xray::FieldOrder::Top},
+						 {obs_module_text("Row.Field.Bottom"), xray::FieldOrder::Bottom}},
+						xray::deinterlace_field_order(sourceUuid), [this](xray::FieldOrder v) {
+							xray::set_deinterlace_field_order(sourceUuid, v);
+						});
+
+		menu.addSeparator();
+	}
+
+	/* --- transform, video sources only --- */
+
+	if (props.has_video) {
+		QMenu *transform = menu.addMenu(obs_module_text("Row.Transform"));
+
+		const std::vector<std::pair<const char *, xray::TransformOp>> ops = {
+			{"Row.Transform.Reset", xray::TransformOp::Reset},
+			{nullptr, xray::TransformOp::Reset}, /* separator */
+			{"Row.Transform.Rotate90CW", xray::TransformOp::Rotate90CW},
+			{"Row.Transform.Rotate90CCW", xray::TransformOp::Rotate90CCW},
+			{"Row.Transform.Rotate180", xray::TransformOp::Rotate180},
+			{nullptr, xray::TransformOp::Reset},
+			{"Row.Transform.FlipH", xray::TransformOp::FlipHorizontal},
+			{"Row.Transform.FlipV", xray::TransformOp::FlipVertical},
+			{nullptr, xray::TransformOp::Reset},
+			{"Row.Transform.FitToScreen", xray::TransformOp::FitToScreen},
+			{"Row.Transform.StretchToScreen", xray::TransformOp::StretchToScreen},
+			{"Row.Transform.CenterToScreen", xray::TransformOp::CenterToScreen},
+			{"Row.Transform.CenterVertically", xray::TransformOp::CenterVertically},
+			{"Row.Transform.CenterHorizontally", xray::TransformOp::CenterHorizontally},
+		};
+
+		for (const auto &entry : ops) {
+			if (!entry.first) {
+				transform->addSeparator();
+				continue;
+			}
+
+			QAction *action = transform->addAction(obs_module_text(entry.first));
+			const xray::TransformOp op = entry.second;
+			connect(action, &QAction::triggered, this,
+				[this, op] { xray::apply_transform(owner, item, op); });
+		}
+	}
+
 	/* --- order, which every kind of item has --- */
 
 	QMenu *order = menu.addMenu(obs_module_text("Row.Order"));
@@ -426,6 +488,12 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	connect(interact, &QAction::triggered, this, [this] { xray::open_source_interaction(sourceUuid); });
 
 	menu.addSeparator();
+
+	if (props.is_group) {
+		QAction *ungroup = menu.addAction(obs_module_text("Row.Ungroup"));
+		connect(ungroup, &QAction::triggered, this, [this] { xray::ungroup_item(owner, item); });
+		menu.addSeparator();
+	}
 
 	QAction *remove = menu.addAction(obs_module_text("Row.Remove"));
 	connect(remove, &QAction::triggered, this, [this] { confirmRemove(); });
