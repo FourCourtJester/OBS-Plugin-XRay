@@ -17,11 +17,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayDock.hpp"
+#include "SceneWalk.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
 
+#include <QDockWidget>
+#include <QMainWindow>
 #include <QPointer>
 
 OBS_DECLARE_MODULE()
@@ -53,6 +56,41 @@ static bool callback_registered = false;
 /* Guarded rather than raw: OBS owns the widget and outlives our pointer to it. */
 static QPointer<XRayDock> dock_widget;
 
+/*
+ * Puts the dock back in the layout after registration.
+ *
+ * obs_frontend_add_dock_by_id() finishes with setVisible(false) followed by
+ * setFloating(true), so EVERY newly registered plugin dock starts life
+ * floating. That is invisible to anyone whose saved layout already mentions the
+ * dock, because restoreState() -- which runs later in OBSBasic::OBSInit --
+ * puts it back where they left it. On a first install there is no such entry,
+ * so the dock is first seen as a floating window at whatever geometry Qt gives
+ * an unlaid-out widget, which in practice is the top-left corner of the screen.
+ *
+ * Worse, OBSBasic::AddDockWidget hands a new dock NoDockWidgetFeatures when the
+ * operator has Lock UI switched on, so that first appearance cannot be moved,
+ * re-docked or closed -- a floating panel welded to the corner of the display.
+ *
+ * Undoing the float here costs nothing when a saved position exists, since
+ * restoreState() overrides this either way, and gives a sane first run when it
+ * does not. Lock UI is deliberately left alone: it is the operator's setting,
+ * and it applies to every dock OBS has.
+ */
+static void settle_dock(void)
+{
+	QMainWindow *main = qobject_cast<QMainWindow *>(static_cast<QWidget *>(obs_frontend_get_main_window()));
+	if (!main)
+		return;
+
+	/* OBS wraps our widget in an OBSDock carrying the id as its object
+	 * name. Nothing hands that wrapper back, so it is looked up. */
+	QDockWidget *wrapper = main->findChild<QDockWidget *>(DOCK_ID);
+	if (!wrapper)
+		return;
+
+	wrapper->setFloating(false);
+}
+
 static void create_dock(void)
 {
 	if (dock_registered)
@@ -72,6 +110,9 @@ static void create_dock(void)
 
 	dock_widget = dock;
 	dock_registered = true;
+
+	settle_dock();
+
 	obs_log(LOG_INFO, "dock registered as '%s'", DOCK_ID);
 }
 
@@ -136,6 +177,11 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		 */
 		destroy_dock();
 
+		/* Weak references to sources that obs_shutdown() is about to
+		 * free. Dropped here rather than left to static destruction,
+		 * which runs afterwards. */
+		xray::clear_clipboard();
+
 		obs_frontend_remove_event_callback(frontend_event, nullptr);
 		callback_registered = false;
 		break;
@@ -198,6 +244,7 @@ void obs_module_unload(void)
 	}
 
 	destroy_dock();
+	xray::clear_clipboard();
 
 	obs_log(LOG_INFO, "plugin unloaded");
 }

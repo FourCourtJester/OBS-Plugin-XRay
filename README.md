@@ -60,18 +60,32 @@ All of it follows the user's theme automatically, including themes that do not e
 
 ### What the dock shows
 
-Pruning is asymmetric. Above a subscene, only items on a path to one appear — an ordinary source at
-the top level of the program scene gets no row, since the stock Sources dock already lists it, and a
-group earns a row only if a subscene turned up beneath it. At and below a subscene, everything is
-listed, because seeing inside the subscene is the point.
+Two views, switched by the **All** toggle at the left of the dock's toolbar and remembered across
+restarts in the user config under `[XRay] ShowAllSources`.
+
+**Off (default) — pruned.** Pruning is asymmetric. Above a subscene, only items on a path to one
+appear: an ordinary source at the top level of the program scene gets no row, since the stock
+Sources dock already lists it, and a group earns a row only if a subscene turned up beneath it. At
+and below a subscene, everything is listed, because seeing inside the subscene is the point.
+
+**On — mirrored.** Nothing above a subscene is pruned either, so the dock shows everything the
+Sources dock shows and then carries on down into the nested scenes. The cost is a duplicate of a
+list you already have when the scene is flat, which is why it is not the only behaviour. The gain is
+that a group holding no nested scene stops silently vanishing — which reads as a missing feature
+rather than as deliberate pruning, and was the first thing a tester hit.
+
+Both views share one walk; the difference is a single flag (`list_all` in `walk_scene`) that starts
+true in the mirrored view and only becomes true on entering a subscene in the pruned one.
 
 A scene referenced twice is drawn twice; there is no deduplication. A scene that appears on its own
 ancestor path is marked `(recursive)` and not descended into.
 
 Selection follows OBS: picking a row in the stock Sources dock highlights the matching row here and
-scrolls it into view. Only rows that exist in both lists can respond — a plain source selected in
-the Sources dock is pruned out of this one, so nothing highlights. Scrolling happens only when the
-selection actually moves, never on an incidental rebuild. The reverse direction is not wired up:
+scrolls it into view. Only rows that exist in both lists can respond — in the pruned view a plain
+source selected in the Sources dock has no row here, so nothing highlights. Scrolling happens only when the
+selection actually moves, never on an incidental rebuild — turning **All** on removes that
+limitation, since every row the Sources dock has then exists here too. The reverse direction is not
+wired up:
 clicking a row here does not select it in OBS, since a nested selection cannot reach the preview.
 
 Rows can be dragged to reorder, but only among rows sharing their owning scene — rows at different
@@ -100,6 +114,97 @@ Only registration happens there. No scene collection is loaded yet, so the conte
 Note that OBS and the plugin share one Qt instance in-process, so a Qt ABI mismatch is undefined
 behaviour that cannot be detected at runtime — only prevented at build time. Expect per-OBS-major
 builds rather than one universal binary.
+
+## Installing
+
+Grab the build for your platform from a
+[release](https://github.com/FourCourtJester/OBS-Plugin-XRay/releases), or from the Artifacts of a
+[CI run](https://github.com/FourCourtJester/OBS-Plugin-XRay/actions) if you want a build of an
+unreleased branch. **Close OBS before copying anything in** — the module is loaded at startup and a
+running OBS holds the file open on Windows.
+
+### Windows
+
+The zip contains an `obs-xray` folder already in the right shape. Drop it whole into:
+
+```
+C:\ProgramData\obs-studio\plugins\
+```
+
+so that you end up with:
+
+```
+C:\ProgramData\obs-studio\plugins\obs-xray\bin\64bit\obs-xray.dll
+C:\ProgramData\obs-studio\plugins\obs-xray\data\locale\en-US.ini
+```
+
+Paste `%ProgramData%\obs-studio\plugins` into the Explorer address bar to get there; create the
+`plugins` folder if it is not already present. No admin rights are needed and OBS updates leave it
+alone.
+
+**It is not `%APPDATA%`.** That is worth stating plainly because a lot of community guides say it:
+`%APPDATA%\obs-studio\plugins` does not exist as a search path on Windows. OBS builds this path from
+`CSIDL_COMMON_APPDATA`, which is `C:\ProgramData` — see `AddExtraModulePaths()` in
+`frontend/widgets/OBSBasic.cpp`. `%APPDATA%` holds your *settings*, not your plugins.
+
+Two cases where that path is wrong:
+
+- **Portable mode.** `AddExtraModulePaths()` returns early before adding it, so a portable install
+  never scans `C:\ProgramData`. Use the install directory instead (below).
+- **Installing next to OBS itself.** That location works, but takes a *different* layout — the files
+  are split rather than kept in one folder, and it needs admin rights:
+
+  ```
+  C:\Program Files\obs-studio\obs-plugins\64bit\obs-xray.dll
+  C:\Program Files\obs-studio\data\obs-plugins\obs-xray\locale\en-US.ini
+  ```
+
+### macOS
+
+Copy the `obs-xray.plugin` bundle to:
+
+```
+~/Library/Application Support/obs-studio/plugins/
+```
+
+Builds are **not signed or notarized**, so Gatekeeper will refuse to load the bundle. Clear the
+quarantine flag after copying:
+
+```sh
+xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/obs-xray.plugin
+```
+
+### Linux
+
+The Ubuntu artifact is a `.deb`:
+
+```sh
+sudo apt install ./obs-xray-1.0.1-x86_64.deb
+```
+
+To install by hand instead, the per-user path is `~/.config/obs-studio/plugins/obs-xray/`, with the
+same `bin/64bit` and `data` layout Windows uses.
+
+### First run
+
+The dock is registered docked to the right, and OBS remembers wherever you move it after that.
+
+If it ever turns up as a floating panel stuck in the top-left corner of the screen with no title bar
+and no way to drag it, that is **Lock UI**, and it is worth knowing why because it affects every
+plugin dock, not just this one. `obs_frontend_add_dock_by_id()` finishes with `setFloating(true)`, so
+a dock OBS has no saved position for is first shown floating; `OBSBasic::AddDockWidget` then gives a
+new dock `NoDockWidgetFeatures` if Lock UI is on, which strips the header and makes it immovable.
+
+Turn Lock UI off in the **Docks** menu, put the dock where you want it, and turn it back on. A saved
+position survives upgrades — but note that launching OBS once *without* the plugin installed drops it,
+because `QMainWindow::saveState()` only records docks that exist at the time.
+
+### Checking it loaded
+
+Start OBS and look for **Docks → Sources X-Ray**. If it is missing, the OBS log (Help → Log Files →
+View Current Log) will say why — search for `obs-xray`. On a successful load it logs
+`dock registered as 'obs-xray-subscene-sources'`. A version that is too old logs `requires OBS
+30.0.0 or later` and stops there.
 
 ## Building
 
@@ -163,6 +268,34 @@ The two format actions run `brew update` before installing. GitHub runners set
 formulae are written against current Homebrew — without the update, `brew install` fails to parse
 the formula and the job dies with `unknown install step: run` before reading a single source file.
 That failure is inherited from `obs-plugintemplate` and affects any plugin generated from it.
+
+### Checking the context menu against OBS
+
+`XRayRow`'s context menu is a hand-built copy of `OBSBasic::CreateSourcePopupMenu`. It has to be:
+`OBSBasic` lives in the OBS executable rather than a linkable library, nothing in
+`obs-frontend-api` exposes the menu, and every handler behind it resolves its own target through
+`ui->sources` — the stock Sources dock, which by construction can never hold a nested item.
+
+That copy is duplicated data, so there is a script to measure the drift:
+
+```sh
+git clone --depth 1 --branch 31.1.1 https://github.com/obsproject/obs-studio ../obs-studio
+tools/compare-menus.py --obs ../obs-studio
+```
+
+It reads both menus straight out of the C++ and reports entries either side is missing, order
+differences, and separator placement. `--dump` prints both menus as trees, which is what you want in
+front of you when comparing the real thing side by side; `--all` also lists the differences we keep
+on purpose. Exit status is 0 when only the expected differences remain.
+
+Deliberate omissions and additions live in `EXPECTED_MISSING` / `EXPECTED_EXTRA` at the top of the
+script, each with its reason. An entry there that stops differing is reported as stale, so the
+allowlist cannot quietly rot into hiding real drift.
+
+The comparison is on display strings, not locale keys — the two sides have different locale files,
+and X-Ray's strings are copied from OBS's precisely so the menus read the same. Runs built by
+runtime enumeration (input types, transition types, monitors, colour swatches) have no list in the
+source to read; they are compared as `<<placeholders>>` and their contents are not checked.
 
 ## License
 
