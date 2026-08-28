@@ -89,7 +89,7 @@ saved layouts survive — the preview dock is purely additive.
 
 ### What each dock shows
 
-Two views, switched by the **All** toggle at the left of each dock's toolbar and remembered across
+Two views, switched by the **All Sources** toggle at the left of each dock's toolbar and remembered across
 restarts in the user config: `[XRay] ShowAllSources` for the program dock, `ShowAllSourcesPreview`
 for the preview one. Kept separate on purpose — the full mirror on one and the focused view on the
 other is a reasonable way to work, and a shared setting would make each dock fight the other.
@@ -114,7 +114,7 @@ ancestor path is marked `(recursive)` and not descended into.
 Selection follows OBS: picking a row in the stock Sources dock highlights the matching row here and
 scrolls it into view. Only rows that exist in both lists can respond — in the pruned view a plain
 source selected in the Sources dock has no row here, so nothing highlights. Scrolling happens only when the
-selection actually moves, never on an incidental rebuild — turning **All** on removes that
+selection actually moves, never on an incidental rebuild — turning **All Sources** on removes that
 limitation, since every row the Sources dock has then exists here too. The reverse direction is not
 wired up:
 clicking a row here does not select it in OBS, since a nested selection cannot reach the preview.
