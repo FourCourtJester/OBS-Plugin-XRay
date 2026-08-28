@@ -40,8 +40,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <algorithm>
@@ -51,13 +53,33 @@ struct obs_scene;
 struct obs_source;
 struct obs_sceneitem;
 
+/*
+ * Stand-in for obs_data. Tri-state per key, matching the real thing: a key that
+ * was never written reads back as absent, which is what the collapse default
+ * turns on.
+ */
+struct Settings {
+	std::map<std::string, bool> bools;
+	std::map<std::string, long long> ints;
+	std::map<std::string, std::string> strings;
+};
+
 struct obs_source {
 	std::string name;
 	std::string uuid;
 	std::string id; /* "scene", "group", or anything else */
+	std::string unversionedId;
 	obs_scene *scene = nullptr;
 	int deinterlace = 0;
 	int fieldOrder = 0;
+	Settings priv;
+	bool hidden = false;
+	bool isPrivate = false;
+	bool audioActive = true;
+	/* How many times set_audio_active flipped it, so the mixer nudge can be
+	 * checked without a frontend to watch. */
+	int audioToggles = 0;
+	int monitoring = 0;
 };
 
 struct obs_sceneitem {
@@ -66,12 +88,22 @@ struct obs_sceneitem {
 	bool visible = true;
 	bool locked = false;
 	bool selected = false;
-	/* Tri-state, matching obs_data: unset until something writes it. */
-	bool collapsedSet = false;
-	bool collapsed = false;
 	int scale = 0;
 	int blendMode = 0;
 	int blendMethod = 0;
+	Settings priv;
+	obs_source *showTransition = nullptr;
+	obs_source *hideTransition = nullptr;
+	int showDuration = 0;
+	int hideDuration = 0;
+	long refs = 1;
+};
+
+/* Weak references hold the uuid, not the pointer, so one that outlives its
+ * source reports gone rather than dereferencing freed memory -- which is the
+ * whole point of the clipboard holding weak references. */
+struct obs_weak_source {
+	std::string uuid;
 	long refs = 1;
 };
 
@@ -80,10 +112,9 @@ struct obs_scene {
 	std::vector<obs_sceneitem *> items;
 };
 
-/* Minimal obs_data stand-in: one bool per scene item, which is all the walk
- * reads and all set_item_collapsed writes. */
+/* A view onto whichever Settings the caller asked for. */
 struct obs_data {
-	obs_sceneitem *item = nullptr;
+	Settings *settings = nullptr;
 };
 
 /*
@@ -96,6 +127,15 @@ struct obs_data {
 #define OBS_SOURCE_ASYNC (1 << 2)
 #define OBS_SOURCE_ASYNC_VIDEO (OBS_SOURCE_ASYNC | OBS_SOURCE_VIDEO)
 #define OBS_SOURCE_INTERACTION (1 << 5)
+#define OBS_SOURCE_DEPRECATED (1 << 8)
+#define OBS_SOURCE_CAP_DISABLED (1 << 10)
+#define OBS_SOURCE_MONITOR_BY_DEFAULT (1 << 11)
+
+enum obs_monitoring_type {
+	OBS_MONITORING_TYPE_NONE,
+	OBS_MONITORING_TYPE_MONITOR_ONLY,
+	OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT,
+};
 
 enum obs_scale_type {
 	OBS_SCALE_DISABLE,
@@ -149,6 +189,7 @@ typedef struct obs_scene obs_scene_t;
 typedef struct obs_source obs_source_t;
 typedef struct obs_sceneitem obs_sceneitem_t;
 typedef struct obs_data obs_data_t;
+typedef struct obs_weak_source obs_weak_source_t;
 
 #include "SceneWalk.hpp"
 
@@ -159,6 +200,35 @@ static long g_live_item_refs = 0;
 static std::vector<std::unique_ptr<obs_source>> g_sources;
 static std::vector<std::unique_ptr<obs_scene>> g_scenes;
 static std::vector<std::unique_ptr<obs_sceneitem>> g_items;
+static int64_t g_next_id = 1;
+
+/*
+ * Every source in the graph is made here, whether the test built it or libobs
+ * was asked to create one. Private sources -- what a show/hide transition is --
+ * stay out of the by-name lookup and out of obs_enum_sources, as they do in
+ * libobs, but keep a uuid so a weak reference can still find them.
+ */
+static obs_source *new_source(const std::string &name, const std::string &id, bool isPrivate)
+{
+	auto src = std::make_unique<obs_source>();
+	src->name = name;
+	src->uuid = "uuid-" + name;
+	src->id = id;
+	src->unversionedId = id;
+	src->isPrivate = isPrivate;
+
+	obs_source *raw = src.get();
+
+	if (id == "scene" || id == "group") {
+		auto sc = std::make_unique<obs_scene>();
+		sc->source = raw;
+		src->scene = sc.get();
+		g_scenes.push_back(std::move(sc));
+	}
+
+	g_sources.push_back(std::move(src));
+	return raw;
+}
 
 extern "C" {
 
@@ -283,7 +353,14 @@ obs_source_t *obs_frontend_get_current_scene(void)
 obs_data_t *obs_sceneitem_get_private_settings(obs_sceneitem_t *item)
 {
 	obs_data *d = new obs_data;
-	d->item = item;
+	d->settings = item ? &item->priv : nullptr;
+	return d;
+}
+
+obs_data_t *obs_source_get_private_settings(obs_source_t *source)
+{
+	obs_data *d = new obs_data;
+	d->settings = source ? &source->priv : nullptr;
 	return d;
 }
 
@@ -294,20 +371,49 @@ void obs_data_release(obs_data_t *d)
 
 bool obs_data_get_bool(obs_data_t *d, const char *key)
 {
-	return (d && d->item && std::string(key) == "xray_collapsed") ? d->item->collapsed : false;
+	if (!d || !d->settings)
+		return false;
+	auto at = d->settings->bools.find(key);
+	return at != d->settings->bools.end() ? at->second : false;
 }
 
 void obs_data_set_bool(obs_data_t *d, const char *key, bool v)
 {
-	if (d && d->item && std::string(key) == "xray_collapsed") {
-		d->item->collapsed = v;
-		d->item->collapsedSet = true;
-	}
+	if (d && d->settings)
+		d->settings->bools[key] = v;
+}
+
+long long obs_data_get_int(obs_data_t *d, const char *key)
+{
+	if (!d || !d->settings)
+		return 0;
+	auto at = d->settings->ints.find(key);
+	return at != d->settings->ints.end() ? at->second : 0;
+}
+
+void obs_data_set_int(obs_data_t *d, const char *key, long long v)
+{
+	if (d && d->settings)
+		d->settings->ints[key] = v;
+}
+
+const char *obs_data_get_string(obs_data_t *d, const char *key)
+{
+	if (!d || !d->settings)
+		return "";
+	auto at = d->settings->strings.find(key);
+	return at != d->settings->strings.end() ? at->second.c_str() : "";
+}
+
+void obs_data_set_string(obs_data_t *d, const char *key, const char *v)
+{
+	if (d && d->settings)
+		d->settings->strings[key] = v ? v : "";
 }
 
 bool obs_data_has_user_value(obs_data_t *d, const char *key)
 {
-	return d && d->item && std::string(key) == "xray_collapsed" && d->item->collapsedSet;
+	return d && d->settings && d->settings->bools.count(key) > 0;
 }
 
 bool obs_sceneitem_selected(const obs_sceneitem_t *item)
@@ -347,7 +453,7 @@ obs_source_t *obs_get_source_by_name(const char *name)
 	if (!name)
 		return nullptr;
 	for (auto &src : g_sources)
-		if (src->name == name)
+		if (!src->isPrivate && src->name == name)
 			return src.get();
 	return nullptr;
 }
@@ -367,8 +473,9 @@ static std::string g_opened;
 
 bool obs_source_configurable(const obs_source_t *s)
 {
-	/* Mirrors libobs: sources with no settings UI are not configurable. */
-	return s && s->id != "scene" && s->id != "group";
+	/* Mirrors libobs: sources with no settings UI are not configurable. A cut
+	 * transition is the one here with nothing to configure. */
+	return s && s->id != "scene" && s->id != "group" && s->id != "cut_transition";
 }
 
 uint32_t obs_source_get_output_flags(const obs_source_t *s)
@@ -377,8 +484,8 @@ uint32_t obs_source_get_output_flags(const obs_source_t *s)
 		return 0;
 	if (s->id == "browser_source")
 		return OBS_SOURCE_VIDEO | OBS_SOURCE_INTERACTION;
-	if (s->id == "wasapi_input")
-		return OBS_SOURCE_AUDIO;
+	if (s->id == "wasapi_input" || s->id == "wasapi_input_v2")
+		return OBS_SOURCE_AUDIO | OBS_SOURCE_MONITOR_BY_DEFAULT;
 	if (s->id == "ffmpeg_source")
 		return OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO;
 	return OBS_SOURCE_VIDEO;
@@ -540,28 +647,328 @@ void obs_frontend_open_source_interaction(obs_source_t *s)
 	g_opened += "interact:" + (s ? s->name : std::string("?")) + " ";
 }
 
+/* ---- tranche 3: clipboard, transitions, adding sources ---- */
+
+/*
+ * darray, which the frontend scene list is built on, allocates through libobs's
+ * allocator. obs_frontend_source_list_free is a static inline in the frontend
+ * header, so SceneWalk.cpp compiles its own copy of it and frees the array with
+ * bfree -- which is why the array below has to come from bmalloc.
+ */
+void *bmalloc(size_t size)
+{
+	return malloc(size ? size : 1);
+}
+
+void *brealloc(void *ptr, size_t size)
+{
+	return realloc(ptr, size ? size : 1);
+}
+
+void bfree(void *ptr)
+{
+	free(ptr);
+}
+
+/*
+ * Layout-compatible with obs_frontend_source_list: DARRAY(obs_source_t *)
+ * expands to { type *array; size_t num; size_t capacity; }, per
+ * libobs/util/darray.h. This file cannot include the frontend header -- it
+ * would pull in obs.h and collide with every stub here -- so the shape is
+ * mirrored instead. If that layout ever changes upstream, this is what breaks.
+ */
+struct fake_source_list {
+	obs_source **array;
+	size_t num;
+	size_t capacity;
+};
+
+void obs_frontend_get_scenes(void *out)
+{
+	fake_source_list *list = static_cast<fake_source_list *>(out);
+
+	std::vector<obs_source *> scenes;
+	for (auto &src : g_sources)
+		if (!src->isPrivate && src->id == "scene")
+			scenes.push_back(src.get());
+
+	list->num = scenes.size();
+	list->capacity = scenes.size();
+	list->array = scenes.empty() ? nullptr
+				     : static_cast<obs_source **>(bmalloc(sizeof(obs_source *) * scenes.size()));
+
+	for (size_t i = 0; i < scenes.size(); i++)
+		list->array[i] = scenes[i];
+}
+
+obs_weak_source_t *obs_source_get_weak_source(obs_source_t *source)
+{
+	if (!source)
+		return nullptr;
+
+	obs_weak_source *weak = new obs_weak_source;
+	weak->uuid = source->uuid;
+	return weak;
+}
+
+void obs_weak_source_release(obs_weak_source_t *weak)
+{
+	delete weak;
+}
+
+obs_source_t *obs_weak_source_get_source(obs_weak_source_t *weak)
+{
+	return weak ? obs_get_source_by_uuid(weak->uuid.c_str()) : nullptr;
+}
+
+/*
+ * Transform and crop are carried through the clipboard untouched, so there is
+ * nothing here for a stub to get right or wrong -- and standing up libobs's
+ * matrix types would mean testing those instead of anything of ours.
+ */
+void obs_sceneitem_get_info2(const obs_sceneitem_t *, void *) {}
+void obs_sceneitem_set_info2(obs_sceneitem_t *, const void *) {}
+void obs_sceneitem_get_crop(const obs_sceneitem_t *, void *) {}
+void obs_sceneitem_set_crop(obs_sceneitem_t *, const void *) {}
+
+/* Index 0 is first_item, which is the bottom row, so a new item appends to the
+ * end and lands at the top -- the same as libobs. */
+obs_sceneitem_t *obs_scene_add(obs_scene_t *scene, obs_source_t *source)
+{
+	if (!scene || !source)
+		return nullptr;
+
+	auto item = std::make_unique<obs_sceneitem>();
+	item->source = source;
+	item->id = g_next_id++;
+
+	obs_sceneitem *raw = item.get();
+	scene->items.push_back(raw);
+	g_items.push_back(std::move(item));
+
+	return raw;
+}
+
+void obs_scene_atomic_update(obs_scene_t *scene, void (*func)(void *, obs_scene_t *), void *data)
+{
+	if (func)
+		func(data, scene);
+}
+
+void obs_enter_graphics(void) {}
+void obs_leave_graphics(void) {}
+
+obs_sceneitem_t *obs_scene_get_group(obs_scene_t *scene, const char *name)
+{
+	if (!scene || !name)
+		return nullptr;
+
+	for (obs_sceneitem *item : scene->items)
+		if (item->source && item->source->id == "group" && item->source->name == name)
+			return item;
+
+	return nullptr;
+}
+
+obs_source_t *obs_source_create(const char *id, const char *name, obs_data_t *, obs_data_t *)
+{
+	return (id && name) ? new_source(name, id, false) : nullptr;
+}
+
+obs_source_t *obs_source_create_private(const char *id, const char *name, obs_data_t *)
+{
+	return (id && name) ? new_source(name, id, true) : nullptr;
+}
+
+obs_source_t *obs_source_duplicate(obs_source_t *source, const char *name, bool create_private)
+{
+	return (source && name) ? new_source(name, source->id, create_private) : nullptr;
+}
+
+bool obs_source_is_hidden(obs_source_t *s)
+{
+	return s ? s->hidden : false;
+}
+
+const char *obs_source_get_unversioned_id(const obs_source_t *s)
+{
+	return s ? s->unversionedId.c_str() : nullptr;
+}
+
+/* Mirrors libobs: public inputs and groups, never scenes. */
+void obs_enum_sources(bool (*cb)(void *, obs_source_t *), void *param)
+{
+	std::vector<obs_source *> snapshot;
+	for (auto &src : g_sources)
+		if (!src->isPrivate && src->id != "scene")
+			snapshot.push_back(src.get());
+
+	for (obs_source *src : snapshot)
+		if (!cb(param, src))
+			break;
+}
+
+/* Recorded rather than performed: what matters is which pairs were asked for. */
+static std::string g_filter_copies;
+
+void obs_source_copy_filters(obs_source_t *dst, obs_source_t *src)
+{
+	g_filter_copies += (src ? src->name : std::string("?")) + "->" + (dst ? dst->name : std::string("?")) + " ";
+}
+
+bool obs_source_audio_active(const obs_source_t *s)
+{
+	return s ? s->audioActive : false;
+}
+
+void obs_source_set_audio_active(obs_source_t *s, bool active)
+{
+	if (!s || s->audioActive == active)
+		return;
+
+	s->audioActive = active;
+	s->audioToggles++;
+}
+
+void obs_source_set_monitoring_type(obs_source_t *s, enum obs_monitoring_type type)
+{
+	if (s)
+		s->monitoring = static_cast<int>(type);
+}
+
+static const char *const TRANSITION_IDS[] = {"fade_transition", "cut_transition"};
+
+bool obs_enum_transition_types(size_t idx, const char **id)
+{
+	if (idx >= sizeof(TRANSITION_IDS) / sizeof(TRANSITION_IDS[0]))
+		return false;
+
+	*id = TRANSITION_IDS[idx];
+	return true;
+}
+
+obs_source_t *obs_sceneitem_get_transition(obs_sceneitem_t *item, bool show)
+{
+	if (!item)
+		return nullptr;
+
+	return show ? item->showTransition : item->hideTransition;
+}
+
+void obs_sceneitem_set_transition(obs_sceneitem_t *item, bool show, obs_source_t *transition)
+{
+	if (!item)
+		return;
+
+	if (show)
+		item->showTransition = transition;
+	else
+		item->hideTransition = transition;
+}
+
+uint32_t obs_sceneitem_get_transition_duration(obs_sceneitem_t *item, bool show)
+{
+	if (!item)
+		return 0;
+
+	return static_cast<uint32_t>(show ? item->showDuration : item->hideDuration);
+}
+
+void obs_sceneitem_set_transition_duration(obs_sceneitem_t *item, bool show, uint32_t ms)
+{
+	if (!item)
+		return;
+
+	if (show)
+		item->showDuration = static_cast<int>(ms);
+	else
+		item->hideDuration = static_cast<int>(ms);
+}
+
+/* The frontend's own default, which an item with no duration of its own falls
+ * back to. Any value will do here as long as the test knows it. */
+int obs_frontend_get_transition_duration(void)
+{
+	return 300;
+}
+
+struct FakeInput {
+	const char *id;
+	const char *unversioned;
+	uint32_t caps;
+};
+
+/*
+ * One of each case the enumeration has to handle: a plain input, one that is
+ * registered under a newer versioned id, one deprecated, and one disabled --
+ * which must not be offered at all.
+ */
+static const FakeInput INPUT_TYPES[] = {
+	{"browser_source", "browser_source", OBS_SOURCE_VIDEO | OBS_SOURCE_INTERACTION},
+	{"wasapi_input_v2", "wasapi_input", OBS_SOURCE_AUDIO | OBS_SOURCE_MONITOR_BY_DEFAULT},
+	{"ffmpeg_source", "ffmpeg_source", OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO},
+	{"old_thing", "old_thing", OBS_SOURCE_VIDEO | OBS_SOURCE_DEPRECATED},
+	{"broken_thing", "broken_thing", OBS_SOURCE_VIDEO | OBS_SOURCE_CAP_DISABLED},
+};
+
+bool obs_enum_input_types2(size_t idx, const char **id, const char **unversioned)
+{
+	if (idx >= sizeof(INPUT_TYPES) / sizeof(INPUT_TYPES[0]))
+		return false;
+
+	*id = INPUT_TYPES[idx].id;
+	*unversioned = INPUT_TYPES[idx].unversioned;
+	return true;
+}
+
+uint32_t obs_get_source_output_flags(const char *id)
+{
+	for (const FakeInput &type : INPUT_TYPES)
+		if (id && std::string(id) == type.id)
+			return type.caps;
+
+	return 0;
+}
+
+const char *obs_get_latest_input_type_id(const char *unversioned)
+{
+	for (const FakeInput &type : INPUT_TYPES)
+		if (unversioned && std::string(unversioned) == type.unversioned)
+			return type.id;
+
+	return unversioned;
+}
+
+const char *obs_source_get_display_name(const char *id)
+{
+	if (!id)
+		return "";
+
+	const std::string key = id;
+	if (key == "fade_transition")
+		return "Fade";
+	if (key == "cut_transition")
+		return "Cut";
+	if (key == "browser_source")
+		return "Browser";
+	if (key == "wasapi_input_v2")
+		return "Audio Input Capture";
+	if (key == "ffmpeg_source")
+		return "Media Source";
+	if (key == "old_thing")
+		return "Old Thing";
+
+	return id;
+}
+
 } /* extern "C" */
 
 /* ---- graph builders ---- */
 
 static obs_source *make(const std::string &name, const std::string &id)
 {
-	auto src = std::make_unique<obs_source>();
-	src->name = name;
-	src->uuid = "uuid-" + name;
-	src->id = id;
-	obs_source *raw = src.get();
-	if (id == "scene" || id == "group") {
-		auto sc = std::make_unique<obs_scene>();
-		sc->source = raw;
-		src->scene = sc.get();
-		g_scenes.push_back(std::move(sc));
-	}
-	g_sources.push_back(std::move(src));
-	return raw;
+	return new_source(name, id, false);
 }
-
-static int64_t g_next_id = 1;
 
 static obs_sceneitem *add(obs_source *parent, obs_source *child)
 {
@@ -1204,6 +1611,288 @@ int main()
 	      "  S:B\n"
 	      "  S:A\n"
 	      "  S:Before\n");
+
+	/* 9l. Hiding a source in the mixer is stored on the source, and has to
+	 * nudge audio_active off and back on for the frontend to notice --
+	 * leaving the flag exactly as it was found. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *mHost = make("Host", "scene");
+	obs_source *mMic = make("Mic", "wasapi_input");
+	add(mHost, mMic);
+	add(g_program, mHost);
+
+	xray::set_source_mixer_hidden("uuid-Mic", true);
+	check("hide in mixer stores and nudges",
+	      std::string(xray::source_mixer_hidden("uuid-Mic") ? "hidden" : "shown") +
+		      " toggles=" + std::to_string(mMic->audioToggles) + " active=" + (mMic->audioActive ? "1" : "0"),
+	      "hidden toggles=2 active=1");
+
+	xray::set_source_mixer_hidden("uuid-Mic", false);
+	check("unhide in mixer stores and nudges",
+	      std::string(xray::source_mixer_hidden("uuid-Mic") ? "hidden" : "shown") +
+		      " toggles=" + std::to_string(mMic->audioToggles),
+	      "shown toggles=4");
+
+	/* A source with no live audio has no mixer strip to update, so it is
+	 * left alone rather than switched on behind the operator's back. */
+	mMic->audioActive = false;
+	mMic->audioToggles = 0;
+	xray::set_source_mixer_hidden("uuid-Mic", true);
+	xray::set_source_mixer_hidden("uuid-gone", true);
+	check("silent source is not nudged",
+	      std::to_string(mMic->audioToggles) + (mMic->audioActive ? "1" : "0") +
+		      (xray::source_mixer_hidden("uuid-gone") ? "?" : "-"),
+	      "00-");
+
+	/* 9m. Row colour uses OBS's own encoding, so both docks read the same
+	 * value: 0 none, 1 custom, 2..9 for the eight swatches. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *cHost = make("Host", "scene");
+	obs_sceneitem *cItem = add(cHost, make("Web", "browser_source"));
+	add(g_program, cHost);
+
+	auto colour = [](const xray::ItemColor &c) {
+		return std::to_string(c.preset) + "/" + (c.custom.empty() ? "-" : c.custom);
+	};
+
+	const xray::ItemColor unset = xray::item_color("uuid-Host", cItem->id);
+
+	xray::set_item_color("uuid-Host", cItem->id, 5, std::string());
+	const xray::ItemColor preset = xray::item_color("uuid-Host", cItem->id);
+
+	xray::set_item_color("uuid-Host", cItem->id, 1, "#8800FF00");
+	const xray::ItemColor custom = xray::item_color("uuid-Host", cItem->id);
+
+	/* Clearing drops the custom colour too, or the next custom pick would
+	 * come up holding the old one. */
+	xray::set_item_color("uuid-Host", cItem->id, 0, std::string());
+	const xray::ItemColor cleared = xray::item_color("uuid-Host", cItem->id);
+
+	check("row colour round-trips",
+	      colour(unset) + " " + colour(preset) + " " + colour(custom) + " " + colour(cleared),
+	      "0/- 5/- 1/#8800FF00 0/-");
+
+	xray::set_item_color("uuid-gone", 1, 3, std::string());
+	check("colour on a vanished item is dropped", colour(xray::item_color("uuid-gone", 1)), "0/-");
+
+	/* 9n. Copy and paste land in the scene the row belongs to, which is the
+	 * point of having them here at all. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *pHost = make("Host", "scene");
+	obs_source *pOther = make("Other", "scene");
+	obs_sceneitem *pWeb = add(pHost, make("Web", "browser_source"));
+	add(g_program, pHost);
+	add(g_program, pOther);
+
+	xray::paste_item("uuid-Other", false);
+	check("paste with an empty clipboard does nothing", run(),
+	      "S:Other\n"
+	      "S:Host\n"
+	      "  -:Web\n");
+
+	xray::copy_item("uuid-Host", pWeb->id);
+	xray::paste_item("uuid-Other", false);
+	check("paste reference lands in the row's own scene", run(),
+	      "S:Other\n"
+	      "  -:Web\n"
+	      "S:Host\n"
+	      "  -:Web\n");
+
+	xray::paste_item("uuid-Other", true);
+	check("paste duplicate takes a free name", run(),
+	      "S:Other\n"
+	      "  -:Web 2\n"
+	      "  -:Web\n"
+	      "S:Host\n"
+	      "  -:Web\n");
+
+	/* A group cannot be referenced twice in one scene, so that paste is
+	 * dropped rather than half applied -- but the same group is fine
+	 * somewhere else. */
+	obs_source *pGroup = make("Grp", "group");
+	add(pGroup, make("Boxed", "scene"));
+	obs_sceneitem *pGroupItem = add(pOther, pGroup);
+
+	xray::copy_item("uuid-Other", pGroupItem->id);
+	xray::paste_item("uuid-Other", false);
+	xray::paste_item("uuid-Host", false);
+	check("group reference refused in its own scene, allowed elsewhere", run(),
+	      "S:Other\n"
+	      "  G:Grp\n"
+	      "    S:Boxed\n"
+	      "  -:Web 2\n"
+	      "  -:Web\n"
+	      "S:Host\n"
+	      "  G:Grp\n"
+	      "    S:Boxed\n"
+	      "  -:Web\n");
+
+	/* Paste into a scene that has gone is dropped, not guessed at. */
+	xray::paste_item("uuid-gone", false);
+	std::cout << "PASS  paste into a vanished scene ignored\n";
+
+	/* 9o. The clipboard holds weak references, so it empties itself when
+	 * the source it was pointing at goes. */
+	check("clipboard holds a copied source", xray::clipboard_has_item() ? "held" : "empty", "held");
+	reset();
+	check("clipboard lets go of a destroyed source", xray::clipboard_has_item() ? "held" : "empty", "empty");
+
+	/* 9p. Filters are copied wholesale between sources, never onto the one
+	 * they came from. */
+	g_program = make("Program", "scene");
+	obs_source *fHost = make("Host", "scene");
+	add(fHost, make("Web", "browser_source"));
+	add(fHost, make("Clip", "ffmpeg_source"));
+	add(g_program, fHost);
+
+	g_filter_copies.clear();
+	xray::paste_filters("uuid-Web");
+	xray::copy_filters("uuid-Web");
+	xray::paste_filters("uuid-Web");
+	xray::paste_filters("uuid-Clip");
+	xray::paste_filters("uuid-gone");
+	check("filters paste only onto another source", g_filter_copies, "Web->Clip ");
+
+	/* 9q. Show and hide transitions. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *tHost = make("Host", "scene");
+	obs_sceneitem *tWeb = add(tHost, make("Web", "browser_source"));
+	obs_sceneitem *tClip = add(tHost, make("Clip", "ffmpeg_source"));
+	add(g_program, tHost);
+
+	auto transition = [](const xray::ItemTransition &t) {
+		return (t.id.empty() ? std::string("none") : t.id) + "/" + std::to_string(t.duration_ms) + "/" +
+		       (t.configurable ? "cfg" : "-");
+	};
+
+	/* Nothing set yet shows the frontend's own duration, which is what the
+	 * item would actually use. */
+	check("no transition falls back to the frontend duration",
+	      transition(xray::item_transition("uuid-Host", tWeb->id, true)), "none/300/-");
+
+	xray::set_item_transition("uuid-Host", tWeb->id, true, "fade_transition", "Web Show Transition");
+	const size_t afterFirst = g_sources.size();
+
+	/* Picking the same type again keeps the transition that is already
+	 * there, settings and all, rather than building a fresh one. */
+	xray::set_item_transition("uuid-Host", tWeb->id, true, "fade_transition", "Web Show Transition");
+	check("re-picking the same transition changes nothing",
+	      transition(xray::item_transition("uuid-Host", tWeb->id, true)) +
+		      (g_sources.size() == afterFirst ? " kept" : " replaced"),
+	      "fade_transition/300/cfg kept");
+
+	/* Show and hide are separate settings on the same item. */
+	check("hide transition is independent of show", transition(xray::item_transition("uuid-Host", tWeb->id, false)),
+	      "none/300/-");
+
+	xray::set_item_transition_duration("uuid-Host", tWeb->id, true, 750);
+	xray::set_item_transition_duration("uuid-Host", tWeb->id, true, 0);
+	xray::set_item_transition("uuid-Host", tWeb->id, false, "cut_transition", "Web Hide Transition");
+	check("duration sticks, and a cut has nothing to configure",
+	      transition(xray::item_transition("uuid-Host", tWeb->id, true)) + " " +
+		      transition(xray::item_transition("uuid-Host", tWeb->id, false)),
+	      "fade_transition/750/cfg cut_transition/300/-");
+
+	xray::set_item_transition("uuid-Host", tWeb->id, true, std::string(), std::string());
+	check("clearing a transition clears its duration too",
+	      transition(xray::item_transition("uuid-Host", tWeb->id, true)), "none/300/-");
+
+	/* Pasting duplicates rather than sharing: two items pointing at one
+	 * transition would share its settings and its playback state. */
+	xray::copy_item_transition("uuid-Host", tWeb->id, false);
+	xray::paste_item_transition("uuid-Host", tClip->id, false);
+	check("pasted transition is a copy, not the same source",
+	      std::string(xray::clipboard_has_transition() ? "held" : "empty") + " " +
+		      (tClip->hideTransition && tClip->hideTransition != tWeb->hideTransition ? "copy" : "shared") +
+		      " " + transition(xray::item_transition("uuid-Host", tClip->id, false)),
+	      "held copy cut_transition/300/-");
+
+	/* 9r. The Add Source menu's type list. */
+	{
+		std::string listed;
+		for (const xray::SourceType &type : xray::input_types())
+			listed += type.id + (type.deprecated ? "! " : " ");
+
+		/* broken_thing is CAP_DISABLED and must not be offered at all;
+		 * wasapi_input is listed unversioned even though it is
+		 * registered as wasapi_input_v2. */
+		check("input types skip disabled and flag deprecated", listed,
+		      "browser_source wasapi_input ffmpeg_source old_thing! ");
+	}
+
+	/* 9s. What can be added to a given scene. */
+	reset();
+	g_program = make("Program", "scene");
+	obs_source *aHost = make("Host", "scene");
+	add(g_program, aHost);
+	make("Cam B", "browser_source");
+	make("Cam A", "browser_source");
+	make("Free Group", "group");
+	add(aHost, make("Held Group", "group"));
+	make("Internal", "browser_source")->hidden = true;
+
+	auto listed = [](const std::vector<std::string> &names) {
+		std::string out;
+		for (const std::string &name : names)
+			out += name + "|";
+		return out;
+	};
+
+	check("addable inputs are sorted and skip hidden ones",
+	      listed(xray::addable_sources("uuid-Host", "browser_source")), "Cam A|Cam B|");
+
+	/* A group already in the target cannot be referenced again, so it is
+	 * not offered there. */
+	check("addable groups skip one already in the scene", listed(xray::addable_sources("uuid-Host", "group")),
+	      "Free Group|");
+
+	/* Scenes come from the frontend's list, with the target left out so a
+	 * scene cannot be added to itself. */
+	check("addable scenes exclude the target", listed(xray::addable_sources("uuid-Host", "scene")), "Program|");
+
+	check("nothing is addable to a vanished scene", listed(xray::addable_sources("uuid-gone", "browser_source")),
+	      "");
+
+	/* 9t. Creating and adding. */
+	check("a taken name is refused rather than uniquified",
+	      xray::add_new_source("uuid-Host", "browser_source", "Cam A", true) ? "added" : "refused", "refused");
+
+	check("an empty name is refused",
+	      xray::add_new_source("uuid-Host", "browser_source", "", true) ? "added" : "refused", "refused");
+
+	xray::add_new_source("uuid-Host", "wasapi_input", "New Mic", true);
+	{
+		obs_source *created = obs_get_source_by_name("New Mic");
+		check("a new source resolves the versioned id and takes default monitoring",
+		      std::string(created ? created->id : "?") + "/" +
+			      std::to_string(created ? created->monitoring : -1),
+		      "wasapi_input_v2/1");
+	}
+
+	xray::add_existing_source("uuid-Host", "Cam B", false, true);
+	xray::add_existing_source("uuid-Host", "Cam B", true, true);
+	xray::add_existing_source("uuid-Host", "Nothing At All", false, true);
+	xray::add_existing_source("uuid-gone", "Cam A", false, true);
+
+	check("existing sources add by reference and by copy", run(),
+	      "S:Host\n"
+	      "  -:Cam B 2\n"
+	      "  -:Cam B\n"
+	      "  -:New Mic\n"
+	      "  G:Held Group\n");
+
+	/* 9u. Teardown drops every weak reference the clipboards hold. */
+	xray::copy_item("uuid-Host", aHost->scene->items.front()->id);
+	xray::copy_filters("uuid-Cam A");
+	xray::clear_clipboard();
+	check("clearing empties every clipboard",
+	      std::string(xray::clipboard_has_item() ? "i" : "-") + (xray::clipboard_has_filters() ? "f" : "-") +
+		      (xray::clipboard_has_transition() ? "t" : "-"),
+	      "---");
 
 	/* 9. Deep nesting terminates and stays balanced. */
 	reset();

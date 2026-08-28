@@ -28,6 +28,7 @@ class QContextMenuEvent;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QMenu;
 
 /*
  * One row of the tree: expand, icon, name, visibility and lock.
@@ -52,8 +53,12 @@ public:
 	bool isSelected() const { return selected; }
 
 signals:
-	/* Emitted after writing "collapsed", so the dock can redraw. */
-	void collapsedChanged();
+	/*
+	 * Emitted after writing something the private settings hold -- collapse,
+	 * or the row colour. Those emit no libobs signal, so unlike visibility
+	 * and lock they have to ask for the redraw themselves.
+	 */
+	void redrawRequested();
 
 	/* Asks the list to begin a drag for this row. */
 	void dragRequested(XRayRow *row, const QPoint &globalPos);
@@ -76,8 +81,16 @@ private:
 	void exitEditMode(bool save);
 	void confirmRemove();
 
+	void buildAddSourceMenu(QMenu *menu);
+	void buildColorMenu(QMenu *menu);
+	void buildTransitionMenu(QMenu *menu, bool show);
+	void openAddSource(const xray::SourceType &type);
+	void chooseCustomColor();
+	void applyRowColor();
+
 	std::string owner;
 	std::string sourceUuid;
+	std::string sourceName;
 	int64_t item = -1;
 	bool branch = false;
 	bool selected = false;

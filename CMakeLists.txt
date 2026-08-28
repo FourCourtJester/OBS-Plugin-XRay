@@ -49,6 +49,8 @@ target_sources(
     src/SceneTransform.cpp
     src/SceneWalk.cpp
     src/SceneWalk.hpp
+    src/XRayAddSource.cpp
+    src/XRayAddSource.hpp
     src/XRayDock.cpp
     src/XRayDock.hpp
     src/XRayList.cpp

@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayRow.hpp"
+#include "XRayAddSource.hpp"
 #include "XRayList.hpp"
 
 #include <obs-module.h>
@@ -30,16 +31,21 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QLineEdit>
 #include <QAction>
+#include <QColorDialog>
 #include <QContextMenuEvent>
 #include <QActionGroup>
+#include <QGridLayout>
 #include <QGuiApplication>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QScreen>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointer>
+#include <QSpinBox>
+#include <QWidgetAction>
 
 #include <functional>
 #include <utility>
@@ -119,11 +125,13 @@ XRayRow::XRayRow(const xray::Node &node, int depth, QWidget *parent)
 	: QFrame(parent),
 	  owner(node.owner_uuid),
 	  sourceUuid(node.source_uuid),
+	  sourceName(node.name),
 	  item(node.item_id),
 	  branch(!node.children.empty()),
 	  selected(node.selected)
 {
 	setObjectName("xrayRow");
+	applyRowColor();
 
 	iconLabel = new QLabel(this);
 	iconLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
@@ -240,7 +248,7 @@ void XRayRow::onExpandToggled(bool checked)
 	 * one has to ask for the redraw itself.
 	 */
 	xray::set_item_collapsed(owner, item, checked);
-	emit collapsedChanged();
+	emit redrawRequested();
 }
 
 /*
@@ -289,32 +297,324 @@ void XRayRow::mouseDoubleClickEvent(QMouseEvent *event)
 namespace {
 
 /*
- * A submenu of mutually exclusive settings, with the current one ticked.
+ * A run of mutually exclusive settings, with the current one ticked.
  *
  * Every property menu OBS offers has this shape, so one helper keeps each of
  * them down to its list of labels rather than a dozen near-identical blocks.
+ * Added into a menu rather than creating one, because OBS puts two of these
+ * runs -- deinterlace mode and field order -- in a single submenu.
  */
 template<typename Value>
-void addChoiceMenu(QMenu &parent, const QString &title, const std::vector<std::pair<QString, Value>> &choices,
-		   Value current, const std::function<void(Value)> &apply)
+void addChoiceEntries(QMenu *menu, const std::vector<std::pair<QString, Value>> &choices, Value current,
+		      const std::function<void(Value)> &apply)
 {
-	QMenu *sub = parent.addMenu(title);
-	QActionGroup *group = new QActionGroup(sub);
+	QActionGroup *group = new QActionGroup(menu);
 	group->setExclusive(true);
 
 	for (const auto &choice : choices) {
-		QAction *action = sub->addAction(choice.first);
+		QAction *action = menu->addAction(choice.first);
 		action->setCheckable(true);
 		action->setChecked(choice.second == current);
 		group->addAction(action);
 
 		const Value value = choice.second;
-		QObject::connect(action, &QAction::triggered, sub, [apply, value] { apply(value); });
+		QObject::connect(action, &QAction::triggered, menu, [apply, value] { apply(value); });
 	}
 }
 
+template<typename Value>
+void addChoiceMenu(QMenu &parent, const QString &title, const std::vector<std::pair<QString, Value>> &choices,
+		   Value current, const std::function<void(Value)> &apply)
+{
+	addChoiceEntries(parent.addMenu(title), choices, current, apply);
+}
+
+/*
+ * The eight swatches, verbatim from OBS. Both the menu that holds the buttons
+ * and the list that holds the rows are styled with this, so a colour set here
+ * is the same colour the stock Sources dock draws.
+ */
+const char *const SWATCH_STYLESHEET = "*[bgColor=\"1\"]{background-color:rgba(255,68,68,33%);}"
+				      "*[bgColor=\"2\"]{background-color:rgba(255,255,68,33%);}"
+				      "*[bgColor=\"3\"]{background-color:rgba(68,255,68,33%);}"
+				      "*[bgColor=\"4\"]{background-color:rgba(68,255,255,33%);}"
+				      "*[bgColor=\"5\"]{background-color:rgba(68,68,255,33%);}"
+				      "*[bgColor=\"6\"]{background-color:rgba(255,68,255,33%);}"
+				      "*[bgColor=\"7\"]{background-color:rgba(68,68,68,33%);}"
+				      "*[bgColor=\"8\"]{background-color:rgba(255,255,255,33%);}";
+
 } // namespace
 
+/*
+ * The row's tint, which OBS calls "Set Color".
+ *
+ * Mirrors SourceTreeItem's own three cases exactly, including the bgColor
+ * property being one less than the stored preset -- the stored 0 means no
+ * colour, so the eight swatches are stored as 2..9 and drawn as 1..8.
+ */
+void XRayRow::applyRowColor()
+{
+	const xray::ItemColor colour = xray::item_color(owner, item);
+
+	if (colour.preset == 1) {
+		setStyleSheet(QStringLiteral("background: %1").arg(QString::fromStdString(colour.custom)));
+	} else if (colour.preset > 1) {
+		setStyleSheet(SWATCH_STYLESHEET);
+		setProperty("bgColor", colour.preset - 1);
+	} else {
+		setStyleSheet("background: none");
+	}
+}
+
+void XRayRow::buildColorMenu(QMenu *menu)
+{
+	menu->setStyleSheet(SWATCH_STYLESHEET);
+
+	const xray::ItemColor colour = xray::item_color(owner, item);
+
+	QAction *clear = menu->addAction(obs_module_text("Row.Color.Clear"));
+	clear->setCheckable(true);
+	clear->setChecked(colour.preset == 0);
+	connect(clear, &QAction::triggered, this, [this] {
+		xray::set_item_color(owner, item, 0, std::string());
+		emit redrawRequested();
+	});
+
+	QAction *custom = menu->addAction(obs_module_text("Row.Color.Custom"));
+	custom->setCheckable(true);
+	custom->setChecked(colour.preset == 1);
+	connect(custom, &QAction::triggered, this, [this] { chooseCustomColor(); });
+
+	menu->addSeparator();
+
+	/*
+	 * The swatches are plain buttons in a grid, tinted by the menu's own
+	 * stylesheet through the same bgColor property the rows use. OBS builds
+	 * this from a .ui file; the layout is the same four-by-two of 22px
+	 * squares.
+	 */
+	QWidget *swatches = new QWidget(menu);
+	swatches->setStyleSheet("QPushButton { border: 1px solid black; margin: 0; padding: 0; }");
+
+	QGridLayout *grid = new QGridLayout(swatches);
+	grid->setContentsMargins(4, 4, 4, 4);
+	grid->setSpacing(2);
+
+	for (int swatch = 1; swatch < 9; swatch++) {
+		QPushButton *button = new QPushButton(swatches);
+		button->setFixedSize(22, 22);
+		button->setProperty("bgColor", swatch);
+
+		/* The current one is picked out with a heavier border, as OBS
+		 * does -- there is no tick to show on a colour square. */
+		if (colour.preset == swatch + 1)
+			button->setStyleSheet("border: 2px solid black");
+
+		grid->addWidget(button, (swatch - 1) / 4, (swatch - 1) % 4);
+
+		connect(button, &QPushButton::released, this, [this, swatch, menu] {
+			xray::set_item_color(owner, item, swatch + 1, std::string());
+			menu->close();
+			emit redrawRequested();
+		});
+	}
+
+	QWidgetAction *action = new QWidgetAction(menu);
+	action->setDefaultWidget(swatches);
+	menu->addAction(action);
+}
+
+void XRayRow::chooseCustomColor()
+{
+	const xray::ItemColor colour = xray::item_color(owner, item);
+
+	/* OBS's own starting colour when there is nothing stored yet. */
+	const QString start = colour.custom.empty() ? QStringLiteral("#55FF0000")
+						    : QString::fromStdString(colour.custom);
+
+	QColorDialog::ColorDialogOptions options = QColorDialog::ShowAlphaChannel;
+#ifdef __linux__
+	/* Carried over from OBS: the native dialog can hang on Ubuntu here. */
+	options |= QColorDialog::DontUseNativeDialog;
+#endif
+
+	/*
+	 * open() rather than exec(): this runs while the context menu's own
+	 * event loop is still unwinding, and a second nested loop on top of
+	 * that is how rows get deleted underneath their own handlers. The
+	 * dialog is parented to the row, so it goes when the row does.
+	 */
+	QColorDialog *dialog = new QColorDialog(this);
+	dialog->setOptions(options);
+	dialog->setCurrentColor(QColor(start));
+	dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+	QPointer<XRayRow> self = this;
+	connect(dialog, &QColorDialog::colorSelected, this, [self](const QColor &chosen) {
+		if (!self || !chosen.isValid())
+			return;
+
+		xray::set_item_color(self->owner, self->item, 1, chosen.name(QColor::HexArgb).toStdString());
+		emit self->redrawRequested();
+	});
+
+	dialog->open();
+}
+
+void XRayRow::buildTransitionMenu(QMenu *menu, bool show)
+{
+	const xray::ItemTransition current = xray::item_transition(owner, item, show);
+
+	/*
+	 * OBS names the transition source after the item it belongs to, so it
+	 * is recognisable in a properties window. sourceName rather than the
+	 * label, which may carry the "(recursive)" marker.
+	 */
+	const QString suffix = obs_module_text(show ? "Row.ShowTransition" : "Row.HideTransition");
+	const std::string newName = (QString::fromStdString(sourceName) + " " + suffix).toStdString();
+
+	QActionGroup *group = new QActionGroup(menu);
+	group->setExclusive(true);
+
+	auto addType = [&](const QString &label, const std::string &id) {
+		QAction *action = menu->addAction(label);
+		action->setCheckable(true);
+		action->setChecked(current.id == id);
+		group->addAction(action);
+
+		connect(action, &QAction::triggered, this, [this, id, show, newName] {
+			xray::set_item_transition(owner, item, show, id, newName);
+
+			/* Matches OBS: picking a transition that has settings
+			 * opens them straight away. */
+			xray::open_item_transition_properties(owner, item, show);
+		});
+	};
+
+	addType(obs_module_text("Row.Transition.None"), std::string());
+
+	for (const xray::SourceType &type : xray::transition_types())
+		addType(QString::fromStdString(type.name), type.id);
+
+	menu->addSeparator();
+
+	/* Same bounds as OBS's spin box, and the same live application: the
+	 * duration lands as it is typed rather than on closing the menu. */
+	QSpinBox *duration = new QSpinBox(menu);
+	duration->setMinimum(50);
+	duration->setMaximum(20000);
+	duration->setSingleStep(50);
+	duration->setSuffix(" ms");
+	duration->setValue(current.duration_ms);
+
+	connect(duration, &QSpinBox::valueChanged, this,
+		[this, show](int ms) { xray::set_item_transition_duration(owner, item, show, ms); });
+
+	QWidgetAction *durationAction = new QWidgetAction(menu);
+	durationAction->setDefaultWidget(duration);
+	menu->addAction(durationAction);
+
+	if (current.configurable) {
+		menu->addSeparator();
+
+		QAction *properties = menu->addAction(obs_module_text("Row.Properties"));
+		connect(properties, &QAction::triggered, this,
+			[this, show] { xray::open_item_transition_properties(owner, item, show); });
+	}
+
+	menu->addSeparator();
+
+	QAction *copy = menu->addAction(obs_module_text("Row.Copy"));
+	copy->setEnabled(!current.id.empty());
+	connect(copy, &QAction::triggered, this, [this, show] { xray::copy_item_transition(owner, item, show); });
+
+	QAction *paste = menu->addAction(obs_module_text("Row.Paste"));
+	paste->setEnabled(xray::clipboard_has_transition());
+	connect(paste, &QAction::triggered, this, [this, show] { xray::paste_item_transition(owner, item, show); });
+}
+
+void XRayRow::buildAddSourceMenu(QMenu *menu)
+{
+	QMenu *deprecated = nullptr;
+
+	/*
+	 * Inserted in name order as it goes, which is how OBS keeps this list
+	 * sorted -- libobs enumerates input types in registration order, not
+	 * alphabetically.
+	 */
+	auto entry = [this](QMenu *into, const xray::SourceType &type) {
+		QAction *action = new QAction(QString::fromStdString(type.name), into);
+		action->setIcon(source_icon(type.id));
+		connect(action, &QAction::triggered, this, [this, type] { openAddSource(type); });
+
+		QAction *before = nullptr;
+		for (QAction *present : into->actions()) {
+			if (present->text().compare(action->text(), Qt::CaseInsensitive) >= 0) {
+				before = present;
+				break;
+			}
+		}
+
+		into->insertAction(before, action);
+	};
+
+	for (const xray::SourceType &type : xray::input_types()) {
+		if (!type.deprecated) {
+			entry(menu, type);
+			continue;
+		}
+
+		if (!deprecated)
+			deprecated = new QMenu(obs_module_text("Row.Add.Deprecated"), menu);
+
+		entry(deprecated, type);
+	}
+
+	entry(menu, {"scene", obs_module_text("Row.Add.Scene"), false});
+
+	/* Group sits below the separator rather than in the sorted run, which
+	 * is where OBS puts it. */
+	menu->addSeparator();
+
+	const xray::SourceType groupType = {"group", obs_module_text("Row.Add.Group"), false};
+	QAction *group = menu->addAction(source_icon(groupType.id), QString::fromStdString(groupType.name));
+	connect(group, &QAction::triggered, this, [this, groupType] { openAddSource(groupType); });
+
+	if (deprecated) {
+		menu->addSeparator();
+		menu->addMenu(deprecated);
+	}
+}
+
+void XRayRow::openAddSource(const xray::SourceType &type)
+{
+	/*
+	 * Queued, and for the usual reason: the action fires while the context
+	 * menu's exec() is still unwinding, and the dialog runs an event loop
+	 * of its own on top of it.
+	 */
+	QPointer<XRayRow> self = this;
+	const xray::SourceType chosen = type;
+
+	QMetaObject::invokeMethod(
+		this,
+		[self, chosen] {
+			if (!self)
+				return;
+
+			XRayAddSource dialog(self->owner, chosen, self->window());
+			dialog.exec();
+		},
+		Qt::QueuedConnection);
+}
+
+/*
+ * Laid out in the same order as OBSBasic::CreateSourcePopupMenu, section for
+ * section, so the two menus read the same side by side. What is missing is
+ * missing for a reason: Group Items needs multi-select, Edit Transform is an
+ * OBSBasic window with no frontend API, and Resize Output would change the
+ * canvas from a dock that is meant to be about one nested item.
+ */
 void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 {
 	if (editor) {
@@ -331,6 +631,11 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 		QFrame::contextMenuEvent(event);
 		return;
 	}
+
+	/* --- add a source, into this row's own scene --- */
+
+	buildAddSourceMenu(menu.addMenu(obs_module_text("Row.Add")));
+	menu.addSeparator();
 
 	/* --- projector and screenshot, video sources only --- */
 
@@ -357,13 +662,31 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 		QAction *window = projector->addAction(obs_module_text("Row.ProjectorWindow"));
 		connect(window, &QAction::triggered, this, [this] { xray::open_source_projector(sourceUuid, -1); });
 
+		menu.addSeparator();
+
 		QAction *screenshot = menu.addAction(obs_module_text("Row.Screenshot"));
 		connect(screenshot, &QAction::triggered, this, [this] { xray::screenshot_source(sourceUuid); });
 
 		menu.addSeparator();
+	}
 
-		/* --- how the item is rendered --- */
+	/* --- how the row is labelled, and whether it reaches the mixer --- */
 
+	buildColorMenu(menu.addMenu(obs_module_text("Row.Color")));
+
+	if (props.has_audio) {
+		QAction *hideMixer = menu.addAction(obs_module_text("Row.HideMixer"));
+		hideMixer->setCheckable(true);
+		hideMixer->setChecked(xray::source_mixer_hidden(sourceUuid));
+		connect(hideMixer, &QAction::triggered, this,
+			[this](bool checked) { xray::set_source_mixer_hidden(sourceUuid, checked); });
+	}
+
+	menu.addSeparator();
+
+	/* --- how the item is rendered --- */
+
+	if (props.has_video) {
 		addChoiceMenu<xray::ScaleFilter>(menu, obs_module_text("Row.ScaleFiltering"),
 						 {{obs_module_text("Row.Scale.Disable"), xray::ScaleFilter::Disable},
 						  {obs_module_text("Row.Scale.Point"), xray::ScaleFilter::Point},
@@ -393,37 +716,58 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 			props.blending_method,
 			[this](xray::BlendingMethod v) { xray::set_blending_method(owner, item, v); });
 
+		/* --- deinterlacing, async video only, matching OBS --- */
+
+		if (props.is_async_video) {
+			/* One submenu holding both runs, split by a separator,
+			 * exactly as AddDeinterlacingMenu builds it. */
+			QMenu *deinterlacing = menu.addMenu(obs_module_text("Row.Deinterlacing"));
+
+			addChoiceEntries<xray::DeinterlaceMode>(
+				deinterlacing,
+				{{obs_module_text("Row.Deint.Disable"), xray::DeinterlaceMode::Disable},
+				 {obs_module_text("Row.Deint.Discard"), xray::DeinterlaceMode::Discard},
+				 {obs_module_text("Row.Deint.Retro"), xray::DeinterlaceMode::Retro},
+				 {obs_module_text("Row.Deint.Blend"), xray::DeinterlaceMode::Blend},
+				 {obs_module_text("Row.Deint.Blend2x"), xray::DeinterlaceMode::Blend2x},
+				 {obs_module_text("Row.Deint.Linear"), xray::DeinterlaceMode::Linear},
+				 {obs_module_text("Row.Deint.Linear2x"), xray::DeinterlaceMode::Linear2x},
+				 {obs_module_text("Row.Deint.Yadif"), xray::DeinterlaceMode::Yadif},
+				 {obs_module_text("Row.Deint.Yadif2x"), xray::DeinterlaceMode::Yadif2x}},
+				xray::deinterlace_mode(sourceUuid),
+				[this](xray::DeinterlaceMode v) { xray::set_deinterlace_mode(sourceUuid, v); });
+
+			deinterlacing->addSeparator();
+
+			addChoiceEntries<xray::FieldOrder>(
+				deinterlacing,
+				{{obs_module_text("Row.Field.Top"), xray::FieldOrder::Top},
+				 {obs_module_text("Row.Field.Bottom"), xray::FieldOrder::Bottom}},
+				xray::deinterlace_field_order(sourceUuid),
+				[this](xray::FieldOrder v) { xray::set_deinterlace_field_order(sourceUuid, v); });
+		}
+
+		buildTransitionMenu(menu.addMenu(obs_module_text("Row.ShowTransition")), true);
+		buildTransitionMenu(menu.addMenu(obs_module_text("Row.HideTransition")), false);
+
 		menu.addSeparator();
 	}
 
-	/* --- deinterlacing, async video only, matching OBS --- */
+	/* --- order, which every kind of item has, and transform --- */
 
-	if (props.is_async_video) {
-		addChoiceMenu<xray::DeinterlaceMode>(
-			menu, obs_module_text("Row.Deinterlacing"),
-			{{obs_module_text("Row.Deint.Disable"), xray::DeinterlaceMode::Disable},
-			 {obs_module_text("Row.Deint.Discard"), xray::DeinterlaceMode::Discard},
-			 {obs_module_text("Row.Deint.Retro"), xray::DeinterlaceMode::Retro},
-			 {obs_module_text("Row.Deint.Blend"), xray::DeinterlaceMode::Blend},
-			 {obs_module_text("Row.Deint.Blend2x"), xray::DeinterlaceMode::Blend2x},
-			 {obs_module_text("Row.Deint.Linear"), xray::DeinterlaceMode::Linear},
-			 {obs_module_text("Row.Deint.Linear2x"), xray::DeinterlaceMode::Linear2x},
-			 {obs_module_text("Row.Deint.Yadif"), xray::DeinterlaceMode::Yadif},
-			 {obs_module_text("Row.Deint.Yadif2x"), xray::DeinterlaceMode::Yadif2x}},
-			xray::deinterlace_mode(sourceUuid),
-			[this](xray::DeinterlaceMode v) { xray::set_deinterlace_mode(sourceUuid, v); });
-
-		addChoiceMenu<xray::FieldOrder>(menu, obs_module_text("Row.FieldOrder"),
-						{{obs_module_text("Row.Field.Top"), xray::FieldOrder::Top},
-						 {obs_module_text("Row.Field.Bottom"), xray::FieldOrder::Bottom}},
-						xray::deinterlace_field_order(sourceUuid), [this](xray::FieldOrder v) {
-							xray::set_deinterlace_field_order(sourceUuid, v);
-						});
-
-		menu.addSeparator();
+	QMenu *order = menu.addMenu(obs_module_text("Row.Order"));
+	const std::vector<std::pair<const char *, xray::OrderMovement>> moves = {
+		{"Row.Order.Up", xray::OrderMovement::Up},
+		{"Row.Order.Down", xray::OrderMovement::Down},
+		{"Row.Order.Top", xray::OrderMovement::Top},
+		{"Row.Order.Bottom", xray::OrderMovement::Bottom},
+	};
+	for (const auto &move : moves) {
+		QAction *action = order->addAction(obs_module_text(move.first));
+		const xray::OrderMovement movement = move.second;
+		connect(action, &QAction::triggered, this,
+			[this, movement] { xray::set_order(owner, item, movement); });
 	}
-
-	/* --- transform, video sources only --- */
 
 	if (props.has_video) {
 		QMenu *transform = menu.addMenu(obs_module_text("Row.Transform"));
@@ -458,40 +802,37 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 		}
 	}
 
-	/* --- order, which every kind of item has --- */
-
-	QMenu *order = menu.addMenu(obs_module_text("Row.Order"));
-	const std::vector<std::pair<const char *, xray::OrderMovement>> moves = {
-		{"Row.Order.Up", xray::OrderMovement::Up},
-		{"Row.Order.Down", xray::OrderMovement::Down},
-		{"Row.Order.Top", xray::OrderMovement::Top},
-		{"Row.Order.Bottom", xray::OrderMovement::Bottom},
-	};
-	for (const auto &move : moves) {
-		QAction *action = order->addAction(obs_module_text(move.first));
-		const xray::OrderMovement movement = move.second;
-		connect(action, &QAction::triggered, this,
-			[this, movement] { xray::set_order(owner, item, movement); });
-	}
-
-	menu.addSeparator();
-
-	QAction *properties = menu.addAction(obs_module_text("Row.Properties"));
-	properties->setEnabled(xray::source_is_configurable(sourceUuid));
-	connect(properties, &QAction::triggered, this, [this] { xray::open_source_properties(sourceUuid); });
-
-	QAction *filters = menu.addAction(obs_module_text("Row.Filters"));
-	connect(filters, &QAction::triggered, this, [this] { xray::open_source_filters(sourceUuid); });
-
-	QAction *interact = menu.addAction(obs_module_text("Row.Interact"));
-	interact->setEnabled(xray::source_is_interactive(sourceUuid));
-	connect(interact, &QAction::triggered, this, [this] { xray::open_source_interaction(sourceUuid); });
-
 	menu.addSeparator();
 
 	if (props.is_group) {
 		QAction *ungroup = menu.addAction(obs_module_text("Row.Ungroup"));
 		connect(ungroup, &QAction::triggered, this, [this] { xray::ungroup_item(owner, item); });
+		menu.addSeparator();
+	}
+
+	/* --- clipboard, this dock's own --- */
+
+	QAction *copy = menu.addAction(obs_module_text("Row.Copy"));
+	connect(copy, &QAction::triggered, this, [this] { xray::copy_item(owner, item); });
+
+	QAction *pasteRef = menu.addAction(obs_module_text("Row.PasteReference"));
+	pasteRef->setEnabled(xray::clipboard_has_item());
+	connect(pasteRef, &QAction::triggered, this, [this] { xray::paste_item(owner, false); });
+
+	QAction *pasteDup = menu.addAction(obs_module_text("Row.PasteDuplicate"));
+	pasteDup->setEnabled(xray::clipboard_has_item());
+	connect(pasteDup, &QAction::triggered, this, [this] { xray::paste_item(owner, true); });
+
+	menu.addSeparator();
+
+	if (props.has_video || props.has_audio) {
+		QAction *copyFilters = menu.addAction(obs_module_text("Row.CopyFilters"));
+		connect(copyFilters, &QAction::triggered, this, [this] { xray::copy_filters(sourceUuid); });
+
+		QAction *pasteFilters = menu.addAction(obs_module_text("Row.PasteFilters"));
+		pasteFilters->setEnabled(xray::clipboard_has_filters());
+		connect(pasteFilters, &QAction::triggered, this, [this] { xray::paste_filters(sourceUuid); });
+
 		menu.addSeparator();
 	}
 
@@ -508,6 +849,20 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	connect(rename, &QAction::triggered, this,
 		[this] { QMetaObject::invokeMethod(this, [this] { enterEditMode(); }, Qt::QueuedConnection); });
 
+	menu.addSeparator();
+
+	if (xray::source_is_interactive(sourceUuid)) {
+		QAction *interact = menu.addAction(obs_module_text("Row.Interact"));
+		connect(interact, &QAction::triggered, this, [this] { xray::open_source_interaction(sourceUuid); });
+	}
+
+	QAction *filters = menu.addAction(obs_module_text("Row.Filters"));
+	connect(filters, &QAction::triggered, this, [this] { xray::open_source_filters(sourceUuid); });
+
+	QAction *properties = menu.addAction(obs_module_text("Row.Properties"));
+	properties->setEnabled(xray::source_is_configurable(sourceUuid));
+	connect(properties, &QAction::triggered, this, [this] { xray::open_source_properties(sourceUuid); });
+
 	/*
 	 * exec() spins a nested event loop, so scene signals keep arriving and a
 	 * rebuild would delete this row while its own handler is still on the
@@ -515,15 +870,15 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 	 * menu closes.
 	 */
 	/* Rows are parented to the XRayList, so no back-pointer is needed. */
-	XRayList *owner = qobject_cast<XRayList *>(parentWidget());
+	XRayList *list = qobject_cast<XRayList *>(parentWidget());
 
-	if (owner)
-		owner->enterNestedLoop();
+	if (list)
+		list->enterNestedLoop();
 
 	menu.exec(event->globalPos());
 
-	if (owner)
-		owner->exitNestedLoop();
+	if (list)
+		list->exitNestedLoop();
 }
 
 /* ---------------------------------------------------------------- rename */

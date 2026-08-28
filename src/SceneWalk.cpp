@@ -686,4 +686,603 @@ void ungroup_item(const std::string &owner_uuid, int64_t item_id)
 		obs_sceneitem_group_ungroup(item);
 }
 
+/* ------------------------------------------------------------ audio mixer */
+
+bool source_mixer_hidden(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!source)
+		return false;
+
+	OBSDataAutoRelease settings = obs_source_get_private_settings(source);
+	return obs_data_get_bool(settings, "mixer_hidden");
+}
+
+void set_source_mixer_hidden(const std::string &source_uuid, bool hidden)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!source)
+		return;
+
+	OBSDataAutoRelease settings = obs_source_get_private_settings(source);
+	obs_data_set_bool(settings, "mixer_hidden", hidden);
+
+	/*
+	 * The setting on its own changes nothing on screen. OBSBasic builds and
+	 * tears down the mixer strip in ActivateAudioSource and
+	 * DeactivateAudioSource, which it calls from the source's
+	 * audio_activate and audio_deactivate signals; neither the methods nor
+	 * the signals are reachable from a plugin.
+	 *
+	 * Toggling audio_active off and straight back on emits exactly that
+	 * pair, so the frontend re-reads mixer_hidden and the strip goes or
+	 * comes back immediately. It is safe: libobs never reads audio_active
+	 * for anything but raising these two signals -- it is a UI flag, not
+	 * part of the audio path -- and the value ends up exactly as it was
+	 * found. A source that is not audio-active has no strip to update, so
+	 * it is left alone rather than switched on.
+	 */
+	if (obs_source_audio_active(source)) {
+		obs_source_set_audio_active(source, false);
+		obs_source_set_audio_active(source, true);
+	}
+}
+
+/* -------------------------------------------------------- background colour */
+
+ItemColor item_color(const std::string &owner_uuid, int64_t item_id)
+{
+	ItemColor colour;
+
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return colour;
+
+	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
+	colour.preset = static_cast<int>(obs_data_get_int(settings, "color-preset"));
+	colour.custom = safe_str(obs_data_get_string(settings, "color"));
+
+	return colour;
+}
+
+void set_item_color(const std::string &owner_uuid, int64_t item_id, int preset, const std::string &custom)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	OBSDataAutoRelease settings = obs_sceneitem_get_private_settings(item);
+	obs_data_set_int(settings, "color-preset", preset);
+
+	/* Cleared for every preset but the custom one, matching OBS -- a stale
+	 * colour string left behind would be picked up by the next custom. */
+	obs_data_set_string(settings, "color", preset == 1 ? custom.c_str() : "");
+}
+
+/* ----------------------------------------------------------- the clipboard */
+
+namespace {
+
+/*
+ * Weak references throughout, and released explicitly from clear_clipboard()
+ * rather than by static destruction -- which runs after obs_shutdown() has
+ * already freed what they point at.
+ */
+struct ItemClip {
+	obs_weak_source_t *source = nullptr;
+	obs_transform_info transform = {};
+	obs_sceneitem_crop crop = {};
+	obs_blending_method blend_method = OBS_BLEND_METHOD_DEFAULT;
+	obs_blending_type blend_mode = OBS_BLEND_NORMAL;
+	bool visible = true;
+};
+
+ItemClip g_item_clip;
+obs_weak_source_t *g_filter_clip = nullptr;
+obs_weak_source_t *g_transition_clip = nullptr;
+int g_transition_clip_duration = 0;
+
+void hold(obs_weak_source_t *&slot, obs_source_t *source)
+{
+	/* Taken before the release, so holding a source against itself does not
+	 * drop the last reference in between. */
+	obs_weak_source_t *next = source ? obs_source_get_weak_source(source) : nullptr;
+
+	if (slot)
+		obs_weak_source_release(slot);
+
+	slot = next;
+}
+
+bool still_there(obs_weak_source_t *slot)
+{
+	if (!slot)
+		return false;
+
+	OBSSourceAutoRelease source = obs_weak_source_get_source(slot);
+	return source != nullptr;
+}
+
+struct AddData {
+	obs_source_t *source = nullptr;
+	bool visible = true;
+
+	/* Null means "leave at the default", which is what a freshly created
+	 * source wants and a pasted one does not. */
+	const obs_transform_info *transform = nullptr;
+	const obs_sceneitem_crop *crop = nullptr;
+	const obs_blending_method *blend_method = nullptr;
+	const obs_blending_type *blend_mode = nullptr;
+};
+
+void add_source(void *param, obs_scene_t *scene)
+{
+	AddData *data = static_cast<AddData *>(param);
+
+	obs_sceneitem_t *item = obs_scene_add(scene, data->source);
+	if (!item)
+		return;
+
+	if (data->transform)
+		obs_sceneitem_set_info2(item, data->transform);
+	if (data->crop)
+		obs_sceneitem_set_crop(item, data->crop);
+	if (data->blend_method)
+		obs_sceneitem_set_blending_method(item, *data->blend_method);
+	if (data->blend_mode)
+		obs_sceneitem_set_blending_mode(item, *data->blend_mode);
+
+	obs_sceneitem_set_visible(item, data->visible);
+}
+
+/*
+ * Adding to a group works without any special handling: a group is a scene
+ * internally, and the new item comes in with update_transform set, which makes
+ * libobs recompute the group's bounds on the next tick.
+ */
+void add_to_scene(obs_scene_t *scene, AddData &data)
+{
+	obs_enter_graphics();
+	obs_scene_atomic_update(scene, add_source, &data);
+	obs_leave_graphics();
+}
+
+/* Mirrors get_new_source_name(): the bare name if free, then " 2", " 3"... */
+std::string unique_source_name(const std::string &base)
+{
+	std::string name = base;
+
+	for (int suffix = 2;; suffix++) {
+		OBSSourceAutoRelease taken = obs_get_source_by_name(name.c_str());
+		if (!taken)
+			return name;
+
+		name = base + " " + std::to_string(suffix);
+	}
+}
+
+} // namespace
+
+void copy_item(const std::string &owner_uuid, int64_t item_id)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return;
+
+	hold(g_item_clip.source, source);
+
+	obs_sceneitem_get_info2(item, &g_item_clip.transform);
+	obs_sceneitem_get_crop(item, &g_item_clip.crop);
+	g_item_clip.blend_method = obs_sceneitem_get_blending_method(item);
+	g_item_clip.blend_mode = obs_sceneitem_get_blending_mode(item);
+	g_item_clip.visible = obs_sceneitem_visible(item);
+}
+
+bool clipboard_has_item()
+{
+	return still_there(g_item_clip.source);
+}
+
+void paste_item(const std::string &owner_uuid, bool duplicate)
+{
+	OBSSourceAutoRelease source = g_item_clip.source ? obs_weak_source_get_source(g_item_clip.source) : nullptr;
+	if (!source)
+		return;
+
+	OBSSourceAutoRelease owner;
+	obs_scene_t *scene = resolve_scene(owner_uuid, owner);
+	if (!scene)
+		return;
+
+	const std::string name = safe_str(obs_source_get_name(source));
+
+	OBSSourceAutoRelease copy;
+	obs_source_t *adding = source;
+
+	if (duplicate) {
+		copy = obs_source_duplicate(source, unique_source_name(name).c_str(), false);
+		if (!copy)
+			return;
+
+		adding = copy;
+
+	} else if (!name.empty() && obs_scene_get_group(scene, name.c_str())) {
+		/* libobs will not hold two references to one group in a scene,
+		 * so a paste that would do that is dropped rather than half
+		 * done. OBS's own paste skips it the same way. */
+		return;
+	}
+
+	AddData data;
+	data.source = adding;
+	data.visible = g_item_clip.visible;
+	data.transform = &g_item_clip.transform;
+	data.crop = &g_item_clip.crop;
+	data.blend_method = &g_item_clip.blend_method;
+	data.blend_mode = &g_item_clip.blend_mode;
+
+	add_to_scene(scene, data);
+}
+
+void copy_filters(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(source_uuid.c_str());
+	if (source)
+		hold(g_filter_clip, source);
+}
+
+bool clipboard_has_filters()
+{
+	return still_there(g_filter_clip);
+}
+
+void paste_filters(const std::string &source_uuid)
+{
+	OBSSourceAutoRelease from = g_filter_clip ? obs_weak_source_get_source(g_filter_clip) : nullptr;
+	if (!from)
+		return;
+
+	OBSSourceAutoRelease to = obs_get_source_by_uuid(source_uuid.c_str());
+	if (!to || to.Get() == from.Get())
+		return;
+
+	/* Replaces the destination's filters wholesale, which is what OBS's
+	 * Paste Filters does -- it is not additive. */
+	obs_source_copy_filters(to, from);
+}
+
+void clear_clipboard()
+{
+	hold(g_item_clip.source, nullptr);
+	hold(g_filter_clip, nullptr);
+	hold(g_transition_clip, nullptr);
+	g_transition_clip_duration = 0;
+}
+
+/* ------------------------------------------------ show and hide transitions */
+
+std::vector<SourceType> transition_types()
+{
+	std::vector<SourceType> types;
+
+	const char *id = nullptr;
+	for (size_t idx = 0; obs_enum_transition_types(idx, &id); idx++) {
+		if (!id)
+			continue;
+
+		types.push_back({id, safe_str(obs_source_get_display_name(id)), false});
+	}
+
+	return types;
+}
+
+ItemTransition item_transition(const std::string &owner_uuid, int64_t item_id, bool show)
+{
+	ItemTransition current;
+
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return current;
+
+	/* Borrowed: obs_sceneitem_get_transition does not add a reference. */
+	obs_source_t *transition = obs_sceneitem_get_transition(item, show);
+	if (transition) {
+		current.id = safe_str(obs_source_get_id(transition));
+		current.configurable = obs_source_configurable(transition);
+	}
+
+	current.duration_ms = static_cast<int>(obs_sceneitem_get_transition_duration(item, show));
+
+	/* Unset shows the frontend's own transition duration, which is what the
+	 * item would actually use, rather than a misleading zero. */
+	if (current.duration_ms <= 0)
+		current.duration_ms = obs_frontend_get_transition_duration();
+
+	return current;
+}
+
+void set_item_transition(const std::string &owner_uuid, int64_t item_id, bool show, const std::string &type_id,
+			 const std::string &new_name)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	if (type_id.empty()) {
+		obs_sceneitem_set_transition(item, show, nullptr);
+		obs_sceneitem_set_transition_duration(item, show, 0);
+		return;
+	}
+
+	/*
+	 * Re-picking the type already in place leaves it alone. Replacing it
+	 * would throw away whatever the operator configured on the existing
+	 * transition, which is not what picking the same entry twice means.
+	 */
+	obs_source_t *current = obs_sceneitem_get_transition(item, show);
+	if (current && type_id == safe_str(obs_source_get_id(current)))
+		return;
+
+	/* Private: the transition belongs to this scene item, and has no
+	 * business turning up in the frontend's transition list. */
+	OBSSourceAutoRelease created = obs_source_create_private(type_id.c_str(), new_name.c_str(), nullptr);
+	if (!created)
+		return;
+
+	obs_sceneitem_set_transition(item, show, created);
+
+	if (obs_sceneitem_get_transition_duration(item, show) == 0)
+		obs_sceneitem_set_transition_duration(item, show,
+						      static_cast<uint32_t>(obs_frontend_get_transition_duration()));
+}
+
+void set_item_transition_duration(const std::string &owner_uuid, int64_t item_id, bool show, int duration_ms)
+{
+	if (duration_ms <= 0)
+		return;
+
+	if (obs_sceneitem_t *item = resolve_item(owner_uuid, item_id))
+		obs_sceneitem_set_transition_duration(item, show, static_cast<uint32_t>(duration_ms));
+}
+
+void open_item_transition_properties(const std::string &owner_uuid, int64_t item_id, bool show)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	obs_source_t *transition = obs_sceneitem_get_transition(item, show);
+	if (transition && obs_source_configurable(transition))
+		obs_frontend_open_source_properties(transition);
+}
+
+void copy_item_transition(const std::string &owner_uuid, int64_t item_id, bool show)
+{
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	obs_source_t *transition = obs_sceneitem_get_transition(item, show);
+	if (!transition)
+		return;
+
+	hold(g_transition_clip, transition);
+	g_transition_clip_duration = static_cast<int>(obs_sceneitem_get_transition_duration(item, show));
+}
+
+bool clipboard_has_transition()
+{
+	return still_there(g_transition_clip);
+}
+
+void paste_item_transition(const std::string &owner_uuid, int64_t item_id, bool show)
+{
+	OBSSourceAutoRelease source = g_transition_clip ? obs_weak_source_get_source(g_transition_clip) : nullptr;
+	if (!source)
+		return;
+
+	obs_sceneitem_t *item = resolve_item(owner_uuid, item_id);
+	if (!item)
+		return;
+
+	/*
+	 * Duplicated, not shared. Two items pointing at one transition source
+	 * would share its settings and its playback state; OBS duplicates here
+	 * for the same reason.
+	 */
+	OBSSourceAutoRelease copy = obs_source_duplicate(source, obs_source_get_name(source), true);
+	if (!copy)
+		return;
+
+	obs_sceneitem_set_transition(item, show, copy);
+	obs_sceneitem_set_transition_duration(item, show, static_cast<uint32_t>(g_transition_clip_duration));
+}
+
+/* ------------------------------------------------------------ adding sources */
+
+std::vector<SourceType> input_types()
+{
+	std::vector<SourceType> types;
+
+	const char *id = nullptr;
+	const char *unversioned = nullptr;
+
+	for (size_t idx = 0; obs_enum_input_types2(idx, &id, &unversioned); idx++) {
+		if (!id || !unversioned)
+			continue;
+
+		const uint32_t caps = obs_get_source_output_flags(id);
+
+		/* CAP_DISABLED is how a plugin says "loaded, but not usable
+		 * here" -- offering it would produce a source that cannot run. */
+		if ((caps & OBS_SOURCE_CAP_DISABLED) != 0)
+			continue;
+
+		/*
+		 * The unversioned id is what gets stored and what
+		 * obs_get_latest_input_type_id resolves at creation time, so a
+		 * later version of the plugin picks up the newer type.
+		 */
+		types.push_back(
+			{unversioned, safe_str(obs_source_get_display_name(id)), (caps & OBS_SOURCE_DEPRECATED) != 0});
+	}
+
+	return types;
+}
+
+namespace {
+
+struct SourceScan {
+	std::string type_id;
+	obs_scene_t *target = nullptr;
+	std::vector<std::string> names;
+};
+
+bool collect_source(void *param, obs_source_t *source)
+{
+	SourceScan *scan = static_cast<SourceScan *>(param);
+
+	/* Hidden sources are OBS's internal ones; its own dialog skips them. */
+	if (obs_source_is_hidden(source))
+		return true;
+
+	const char *id = obs_source_get_unversioned_id(source);
+	if (!id || scan->type_id != id)
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	if (!name)
+		return true;
+
+	/* A group cannot be referenced twice in one scene, so one already in
+	 * the target is not offered. */
+	if (scan->target && obs_scene_get_group(scan->target, name))
+		return true;
+
+	scan->names.emplace_back(name);
+	return true;
+}
+
+} // namespace
+
+std::vector<std::string> addable_sources(const std::string &owner_uuid, const std::string &type_id)
+{
+	OBSSourceAutoRelease owner;
+
+	SourceScan scan;
+	scan.type_id = type_id;
+	scan.target = resolve_scene(owner_uuid, owner);
+
+	if (!scan.target)
+		return {};
+
+	if (type_id == "scene") {
+		/*
+		 * Scenes are not in obs_enum_sources -- it walks inputs and
+		 * groups only -- so they come from the frontend's own list,
+		 * which is also the order the operator sees them in.
+		 *
+		 * The target is left out so a scene cannot be added to itself.
+		 * Deeper cycles are libobs's to refuse, and it does: obs_scene_add
+		 * rejects a child that already has this scene beneath it, so a
+		 * bad pick adds nothing rather than building a loop. OBS's own
+		 * dialog filters exactly this much.
+		 */
+		obs_frontend_source_list scenes = {};
+		obs_frontend_get_scenes(&scenes);
+
+		for (size_t i = 0; i < scenes.sources.num; i++) {
+			obs_source_t *scene_source = scenes.sources.array[i];
+			if (!scene_source || scene_source == owner.Get())
+				continue;
+
+			if (const char *name = obs_source_get_name(scene_source))
+				scan.names.emplace_back(name);
+		}
+
+		obs_frontend_source_list_free(&scenes);
+
+	} else {
+		obs_enum_sources(collect_source, &scan);
+		std::sort(scan.names.begin(), scan.names.end());
+	}
+
+	return std::move(scan.names);
+}
+
+bool source_name_taken(const std::string &name)
+{
+	OBSSourceAutoRelease taken = obs_get_source_by_name(name.c_str());
+	return taken != nullptr;
+}
+
+bool add_new_source(const std::string &owner_uuid, const std::string &type_id, const std::string &name, bool visible)
+{
+	if (name.empty() || source_name_taken(name))
+		return false;
+
+	OBSSourceAutoRelease owner;
+	obs_scene_t *scene = resolve_scene(owner_uuid, owner);
+	if (!scene)
+		return false;
+
+	/* Resolves the unversioned id to whatever version is installed. */
+	const char *versioned = obs_get_latest_input_type_id(type_id.c_str());
+
+	OBSSourceAutoRelease source =
+		obs_source_create(versioned ? versioned : type_id.c_str(), name.c_str(), nullptr, nullptr);
+	if (!source)
+		return false;
+
+	AddData data;
+	data.source = source;
+	data.visible = visible;
+
+	add_to_scene(scene, data);
+
+	/* Matches OBS: a source that asks to be monitored by default gets
+	 * monitoring turned on at creation, not left silent. */
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_MONITOR_BY_DEFAULT) != 0)
+		obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_MONITOR_ONLY);
+
+	return true;
+}
+
+bool add_existing_source(const std::string &owner_uuid, const std::string &source_name, bool duplicate, bool visible)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_name(source_name.c_str());
+	if (!source)
+		return false;
+
+	OBSSourceAutoRelease owner;
+	obs_scene_t *scene = resolve_scene(owner_uuid, owner);
+	if (!scene)
+		return false;
+
+	OBSSourceAutoRelease copy;
+	obs_source_t *adding = source;
+
+	if (duplicate) {
+		copy = obs_source_duplicate(source, unique_source_name(source_name).c_str(), false);
+		if (!copy)
+			return false;
+
+		adding = copy;
+
+	} else if (obs_scene_get_group(scene, source_name.c_str())) {
+		return false;
+	}
+
+	AddData data;
+	data.source = adding;
+	data.visible = visible;
+
+	add_to_scene(scene, data);
+	return true;
+}
+
 } // namespace xray

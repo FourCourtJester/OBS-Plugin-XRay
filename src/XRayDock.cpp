@@ -276,7 +276,7 @@ void XRayDock::addRows(const std::vector<xray::Node> &nodes, int depth)
 		XRayRow *row = new XRayRow(node, depth, list);
 		list->addRow(row);
 
-		connect(row, &XRayRow::collapsedChanged, this, &XRayDock::scheduleRefresh);
+		connect(row, &XRayRow::redrawRequested, this, &XRayDock::scheduleRefresh);
 
 		/*
 		 * Collapsing hides rows only. The subtree was still walked --

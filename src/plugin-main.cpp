@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "XRayDock.hpp"
+#include "SceneWalk.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -136,6 +137,11 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		 */
 		destroy_dock();
 
+		/* Weak references to sources that obs_shutdown() is about to
+		 * free. Dropped here rather than left to static destruction,
+		 * which runs afterwards. */
+		xray::clear_clipboard();
+
 		obs_frontend_remove_event_callback(frontend_event, nullptr);
 		callback_registered = false;
 		break;
@@ -198,6 +204,7 @@ void obs_module_unload(void)
 	}
 
 	destroy_dock();
+	xray::clear_clipboard();
 
 	obs_log(LOG_INFO, "plugin unloaded");
 }

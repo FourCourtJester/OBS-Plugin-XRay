@@ -248,6 +248,135 @@ enum class TransformOp {
 
 void apply_transform(const std::string &owner_uuid, int64_t item_id, TransformOp op);
 
+/*
+ * Whether the source is kept out of the audio mixer dock, which OBS stores on
+ * the source's private settings rather than the scene item -- so it applies
+ * wherever the source is used.
+ *
+ * Writing the flag is only half the job. OBS adds and removes the mixer strip
+ * from its own source_audio_activate/deactivate handlers, which a plugin
+ * cannot call, so the setter nudges those signals; see the .cpp.
+ */
+bool source_mixer_hidden(const std::string &source_uuid);
+void set_source_mixer_hidden(const std::string &source_uuid, bool hidden);
+
+/*
+ * The row tint OBS calls "Set Color".
+ *
+ * preset is OBS's own encoding, kept verbatim so both docks read each other's
+ * colours: 0 is no tint, 1 means the custom colour in `custom`, and 2..9 are
+ * the eight swatches. Unlike collapse, this one deliberately shares OBS's key
+ * -- a colour is a label the operator put on the item, and it should mean the
+ * same thing in both lists.
+ */
+struct ItemColor {
+	int preset = 0;
+
+	/* "#AARRGGBB", and only meaningful when preset is 1. */
+	std::string custom;
+};
+
+ItemColor item_color(const std::string &owner_uuid, int64_t item_id);
+void set_item_color(const std::string &owner_uuid, int64_t item_id, int preset, const std::string &custom);
+
+/*
+ * Copy and paste, on a clipboard of this dock's own.
+ *
+ * OBS's clipboard lives on OBSBasic and is not reachable from a plugin, so
+ * this is a separate one: copying here does not disturb what the operator has
+ * on OBS's clipboard, and vice versa. The trade is that the two do not
+ * interoperate, which is the honest outcome given multi-select is not
+ * supported here either.
+ *
+ * Paste targets owner_uuid -- the scene or group the row sits in -- which is
+ * the point: it drops a source into a nested scene without leaving the one on
+ * air.
+ *
+ * duplicate follows OBS: false pastes another reference to the same source,
+ * true copies it under a new name. A reference to a group that is already in
+ * the target scene is refused, exactly as OBS refuses it.
+ */
+void copy_item(const std::string &owner_uuid, int64_t item_id);
+bool clipboard_has_item();
+void paste_item(const std::string &owner_uuid, bool duplicate);
+
+void copy_filters(const std::string &source_uuid);
+bool clipboard_has_filters();
+void paste_filters(const std::string &source_uuid);
+
+/*
+ * Releases every weak reference the clipboards hold. Called from the module's
+ * teardown rather than left to static destruction, which would run after
+ * obs_shutdown() has already freed what those references point at.
+ */
+void clear_clipboard();
+
+/* An id paired with the name to show for it. */
+struct SourceType {
+	std::string id;
+	std::string name;
+	bool deprecated = false;
+};
+
+std::vector<SourceType> transition_types();
+
+/*
+ * The show or hide transition on one scene item.
+ *
+ * id is empty when the item has none. duration_ms falls back to the frontend's
+ * default when the item has not been given one, matching what OBS shows in the
+ * spin box.
+ */
+struct ItemTransition {
+	std::string id;
+	int duration_ms = 0;
+	bool configurable = false;
+};
+
+ItemTransition item_transition(const std::string &owner_uuid, int64_t item_id, bool show);
+
+/*
+ * An empty type_id clears the transition. Otherwise a private transition source
+ * is created under new_name if the item does not already have one of that type;
+ * the caller supplies the name because it is user-facing text, and this file
+ * stays clear of the module locale so the test harness can link it.
+ */
+void set_item_transition(const std::string &owner_uuid, int64_t item_id, bool show, const std::string &type_id,
+			 const std::string &new_name);
+void set_item_transition_duration(const std::string &owner_uuid, int64_t item_id, bool show, int duration_ms);
+void open_item_transition_properties(const std::string &owner_uuid, int64_t item_id, bool show);
+
+void copy_item_transition(const std::string &owner_uuid, int64_t item_id, bool show);
+bool clipboard_has_transition();
+void paste_item_transition(const std::string &owner_uuid, int64_t item_id, bool show);
+
+/*
+ * The input types offered by the Add Source menu, minus the ones libobs marks
+ * unavailable. Scene and group are not in here -- OBS appends those to the menu
+ * itself, and so does the caller.
+ */
+std::vector<SourceType> input_types();
+
+/*
+ * Existing sources of a type that could be added to this scene, by name.
+ * Hidden sources are left out, as are groups already present in the target,
+ * which OBS refuses to reference twice.
+ */
+std::vector<std::string> addable_sources(const std::string &owner_uuid, const std::string &type_id);
+
+bool source_name_taken(const std::string &name);
+
+/*
+ * Both add to owner_uuid rather than to the program scene, which is what makes
+ * them worth having here: a source can be added straight into a nested scene.
+ *
+ * add_new_source refuses a name already in use rather than uniquifying it, the
+ * same as OBS's own dialog. add_existing_source uniquifies, because there it is
+ * a copy and a new name is expected.
+ */
+bool add_new_source(const std::string &owner_uuid, const std::string &type_id, const std::string &name, bool visible);
+bool add_existing_source(const std::string &owner_uuid, const std::string &source_name, bool duplicate, bool visible);
+
 /* Dissolves a group, leaving its children in the parent scene. */
 void ungroup_item(const std::string &owner_uuid, int64_t item_id);
 
