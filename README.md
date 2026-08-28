@@ -171,6 +171,20 @@ sudo apt install ./obs-xray-1.0.1-x86_64.deb
 To install by hand instead, the per-user path is `~/.config/obs-studio/plugins/obs-xray/`, with the
 same `bin/64bit` and `data` layout Windows uses.
 
+### First run
+
+The dock is registered docked to the right, and OBS remembers wherever you move it after that.
+
+If it ever turns up as a floating panel stuck in the top-left corner of the screen with no title bar
+and no way to drag it, that is **Lock UI**, and it is worth knowing why because it affects every
+plugin dock, not just this one. `obs_frontend_add_dock_by_id()` finishes with `setFloating(true)`, so
+a dock OBS has no saved position for is first shown floating; `OBSBasic::AddDockWidget` then gives a
+new dock `NoDockWidgetFeatures` if Lock UI is on, which strips the header and makes it immovable.
+
+Turn Lock UI off in the **Docks** menu, put the dock where you want it, and turn it back on. A saved
+position survives upgrades — but note that launching OBS once *without* the plugin installed drops it,
+because `QMainWindow::saveState()` only records docks that exist at the time.
+
 ### Checking it loaded
 
 Start OBS and look for **Docks → Sources X-Ray**. If it is missing, the OBS log (Help → Log Files →
