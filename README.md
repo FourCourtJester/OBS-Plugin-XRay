@@ -164,6 +164,34 @@ formulae are written against current Homebrew — without the update, `brew inst
 the formula and the job dies with `unknown install step: run` before reading a single source file.
 That failure is inherited from `obs-plugintemplate` and affects any plugin generated from it.
 
+### Checking the context menu against OBS
+
+`XRayRow`'s context menu is a hand-built copy of `OBSBasic::CreateSourcePopupMenu`. It has to be:
+`OBSBasic` lives in the OBS executable rather than a linkable library, nothing in
+`obs-frontend-api` exposes the menu, and every handler behind it resolves its own target through
+`ui->sources` — the stock Sources dock, which by construction can never hold a nested item.
+
+That copy is duplicated data, so there is a script to measure the drift:
+
+```sh
+git clone --depth 1 --branch 31.1.1 https://github.com/obsproject/obs-studio ../obs-studio
+tools/compare-menus.py --obs ../obs-studio
+```
+
+It reads both menus straight out of the C++ and reports entries either side is missing, order
+differences, and separator placement. `--dump` prints both menus as trees, which is what you want in
+front of you when comparing the real thing side by side; `--all` also lists the differences we keep
+on purpose. Exit status is 0 when only the expected differences remain.
+
+Deliberate omissions and additions live in `EXPECTED_MISSING` / `EXPECTED_EXTRA` at the top of the
+script, each with its reason. An entry there that stops differing is reported as stale, so the
+allowlist cannot quietly rot into hiding real drift.
+
+The comparison is on display strings, not locale keys — the two sides have different locale files,
+and X-Ray's strings are copied from OBS's precisely so the menus read the same. Runs built by
+runtime enumeration (input types, transition types, monitors, colour swatches) have no list in the
+source to read; they are compared as `<<placeholders>>` and their contents are not checked.
+
 ## License
 
 GPL-2.0-or-later. See [LICENSE](LICENSE).

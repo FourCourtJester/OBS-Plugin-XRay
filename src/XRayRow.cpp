@@ -757,12 +757,16 @@ void XRayRow::contextMenuEvent(QContextMenuEvent *event)
 
 	QMenu *order = menu.addMenu(obs_module_text("Row.Order"));
 	const std::vector<std::pair<const char *, xray::OrderMovement>> moves = {
-		{"Row.Order.Up", xray::OrderMovement::Up},
-		{"Row.Order.Down", xray::OrderMovement::Down},
-		{"Row.Order.Top", xray::OrderMovement::Top},
-		{"Row.Order.Bottom", xray::OrderMovement::Bottom},
+		{"Row.Order.Up", xray::OrderMovement::Up},   {"Row.Order.Down", xray::OrderMovement::Down},
+		{nullptr, xray::OrderMovement::Up}, /* separator */
+		{"Row.Order.Top", xray::OrderMovement::Top}, {"Row.Order.Bottom", xray::OrderMovement::Bottom},
 	};
 	for (const auto &move : moves) {
+		if (!move.first) {
+			order->addSeparator();
+			continue;
+		}
+
 		QAction *action = order->addAction(obs_module_text(move.first));
 		const xray::OrderMovement movement = move.second;
 		connect(action, &QAction::triggered, this,
